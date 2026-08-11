@@ -12,6 +12,8 @@
 
 * { box-sizing: border-box; }
 
+.hidden { display: none !important; }
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Malgun Gothic", sans-serif;
@@ -81,13 +83,31 @@ body {
 #log { overflow-y: auto; max-height: 220px; font-size: 0.78rem; color: var(--muted); display: flex; flex-direction: column-reverse; }
 .log-line { padding: 0.15rem 0; border-bottom: 1px solid #1c2740; }
 
-#victory-overlay {
-  position: fixed; inset: 0; background: rgba(5,8,16,0.85);
+.overlay {
+  position: fixed; inset: 0; background: rgba(5,8,16,0.9);
   display: flex; align-items: center; justify-content: center; z-index: 10;
+  overflow-y: auto; padding: 2rem 1rem;
 }
-#victory-overlay.hidden { display: none; }
+.overlay.hidden { display: none; }
 .victory-box { background: var(--panel); border: 1px solid var(--border); border-radius: 0.6rem; padding: 2rem 3rem; text-align: center; }
 .victory-box h2 { margin-top: 0; font-size: 1.8rem; }
+
+.setup-box {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 0.6rem;
+  padding: 1.5rem 2rem; max-width: 900px; width: 100%;
+}
+.setup-box h2 { margin-top: 0; text-align: center; }
+.setup-side { margin-top: 1rem; }
+.setup-side h3 { font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 0.5rem; }
+.race-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.6rem; }
+.race-card {
+  border: 1px solid var(--border); border-radius: 0.4rem; padding: 0.7rem 0.8rem; cursor: pointer;
+  background: #0e1626; transition: border-color 0.15s ease;
+}
+.race-card:hover { border-color: var(--accent); }
+.race-selected { border-color: var(--accent); background: #1a1f3a; box-shadow: 0 0 0 1px var(--accent); }
+.race-name { font-weight: bold; margin-bottom: 0.3rem; }
+.race-desc { font-size: 0.78rem; color: var(--muted); }
 
 @media (max-width: 800px) {
   #main-layout { flex-direction: column; }

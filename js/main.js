@@ -1,7 +1,7 @@
 import { initGame, reduce, targetValid } from './rules.js';
 import { getAiActions } from './ai.js';
 import { CARD_DEFS } from './cards.js';
-import { renderMap, renderResourceBar, renderHand, renderLog, renderOrderPanel, renderVictory } from './render.js';
+import { renderMap, renderResourceBar, renderHand, renderLog, renderOrderPanel, renderVictory, renderSetup } from './render.js';
 import { ADJACENCY } from './mapData.js';
 
 const els = {
@@ -12,12 +12,16 @@ const els = {
   orderPanel: document.getElementById('order-panel'),
   endTurnBtn: document.getElementById('end-turn-btn'),
   victory: document.getElementById('victory-overlay'),
+  setup: document.getElementById('setup-overlay'),
   roundInfo: document.getElementById('round-info'),
   newGameBtn: document.getElementById('new-game-btn'),
+  gameLayout: document.getElementById('main-layout'),
 };
 
-let state = initGame(makeSeed());
+let state = null;
 let ui = { selectedNodeId: null, selectedCardUid: null, targetableNodeIds: [] };
+let setup = { P1: 'kingdom', P2: 'kingdom' };
+let screen = 'setup'; // 'setup' | 'playing'
 let aiTimer = null;
 
 function makeSeed() {
@@ -80,7 +84,7 @@ const handlers = {
     ui.selectedNodeId = null;
     if (def.needsTarget) {
       ui.selectedCardUid = uid;
-      ui.targetableNodeIds = Object.keys(state.nodes).filter((id) => targetValid(state, state.activePlayer, state.nodes[id], def.targetFilter));
+      ui.targetableNodeIds = Object.keys(state.nodes).filter((id) => targetValid(state, state.activePlayer, id, def.targetFilter));
       render();
     } else {
       clearSelection();
@@ -93,11 +97,51 @@ const handlers = {
   },
 };
 
+const setupHandlers = {
+  onPickRace(side, race) {
+    setup[side] = race;
+    render();
+  },
+  onStartGame() {
+    startGame();
+  },
+};
+
 function ruleAdjacent(a, b) {
   return !!(ADJACENCY[a] && ADJACENCY[a].includes(b));
 }
 
+function startGame() {
+  clearTimeout(aiTimer); aiTimer = null;
+  state = initGame(makeSeed(), { races: { P1: setup.P1, P2: setup.P2 }, aiPlayers: ['P2'] });
+  clearSelection();
+  screen = 'playing';
+  render();
+}
+
+function backToSetup() {
+  clearTimeout(aiTimer); aiTimer = null;
+  state = null;
+  screen = 'setup';
+  render();
+}
+
 function render() {
+  if (screen === 'setup') {
+    els.gameLayout.classList.add('hidden');
+    els.endTurnBtn.classList.add('hidden');
+    els.victory.classList.add('hidden');
+    els.resourceBar.classList.add('hidden');
+    els.roundInfo.textContent = '종족을 선택하세요';
+    renderSetup(els.setup, setup, setupHandlers);
+    return;
+  }
+
+  els.setup.classList.add('hidden');
+  els.gameLayout.classList.remove('hidden');
+  els.endTurnBtn.classList.remove('hidden');
+  els.resourceBar.classList.remove('hidden');
+
   els.roundInfo.textContent = `라운드 ${state.round} / 12 — ${state.activePlayer} 턴`;
   renderMap(els.map, state, ui, handlers);
   renderResourceBar(els.resourceBar, state);
@@ -121,22 +165,16 @@ function render() {
 }
 
 els.endTurnBtn.addEventListener('click', () => {
+  if (screen !== 'playing') return;
   const active = state.players[state.activePlayer];
   if (active.isAI || state.phase === 'ended') return;
   clearSelection();
   dispatch({ type: 'END_TURN', player: state.activePlayer });
 });
 
-els.newGameBtn.addEventListener('click', restartGame);
+els.newGameBtn.addEventListener('click', backToSetup);
 els.victory.addEventListener('click', (e) => {
-  if (e.target.id === 'restart-btn') restartGame();
+  if (e.target.id === 'restart-btn') backToSetup();
 });
-
-function restartGame() {
-  clearTimeout(aiTimer); aiTimer = null;
-  state = initGame(makeSeed());
-  clearSelection();
-  render();
-}
 
 render();

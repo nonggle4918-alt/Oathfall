@@ -1,10 +1,11 @@
 import { ADJACENCY, DUMP_NODE_IDS } from './mapData.js';
 import { NODE_TYPES } from './mapData.js';
-import { CARD_DEFS } from './cards.js';
+import { CARD_DEFS, RACE_INFO } from './cards.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const OWNER_COLOR = { P1: '#3b82f6', P2: '#ef4444', neutral: '#475569' };
 const TYPE_ICON = { capital: '★', territory: '●', sanctuary: '◆', dump: '◈', neutralCamp: '▲' };
+const RES_LABEL = { supply: '물자', influence: '영향력', research: '연구', zeal: '광신', rift: '균열력', spore: '포자' };
 
 function el(tag, attrs = {}, ns = false) {
   const e = ns ? document.createElementNS(SVG_NS, tag) : document.createElement(tag);
@@ -71,6 +72,17 @@ export function renderMap(svg, state, ui, handlers) {
       g.appendChild(at);
     }
 
+    if (node.infested) {
+      const infColor = OWNER_COLOR[node.infested.owner];
+      const ring = el('circle', {
+        cx: node.x, cy: node.y, r: radius + 6, fill: 'none', stroke: '#84cc16', 'stroke-width': 2, 'stroke-dasharray': '3 3',
+      }, true);
+      g.appendChild(ring);
+      const it = el('text', { x: node.x, y: node.y + radius + 30, 'text-anchor': 'middle', fill: infColor, 'font-size': 11, 'font-weight': 'bold' }, true);
+      it.textContent = `감염 ${node.infested.roundsLeft}R (${node.infested.owner})`;
+      g.appendChild(it);
+    }
+
     g.addEventListener('click', () => handlers.onNodeClick(id));
     svg.appendChild(g);
   }
@@ -94,11 +106,18 @@ export function renderResourceBar(container, state) {
   container.innerHTML = '';
   for (const p of ['P1', 'P2']) {
     const pl = state.players[p];
+    const raceInfo = RACE_INFO[pl.race];
     const box = el('div', { class: `res-box res-${p}` });
+    const uniqueLine = pl.race === 'kingdom'
+      ? `연구 ${pl.research} · 특화: ${pl.specialization ? specName(pl.specialization) : '없음'}`
+      : pl.race === 'rift'
+        ? `균열력 ${pl.rift} · 차원문 Lv${pl.gateLevel}`
+        : `${raceInfo.resourceName} ${pl[raceInfo.resource]}`;
     box.innerHTML = `
-      <div class="res-title">${p}${p === state.activePlayer ? ' ▶' : ''} ${pl.isAI ? '(AI)' : '(플레이어)'}</div>
-      <div class="res-line">물자 ${pl.supply} · 영향력 ${pl.influence} · 연구 ${pl.research}</div>
-      <div class="res-line">AP ${pl.ap}/3 · 특화: ${pl.specialization ? specName(pl.specialization) : '없음'}</div>
+      <div class="res-title">${p}${p === state.activePlayer ? ' ▶' : ''} ${raceInfo.name} ${pl.isAI ? '(AI)' : '(플레이어)'}</div>
+      <div class="res-line">물자 ${pl.supply} · 영향력 ${pl.influence}</div>
+      <div class="res-line">${uniqueLine}</div>
+      <div class="res-line">AP ${pl.ap}/3</div>
     `;
     container.appendChild(box);
   }
@@ -118,15 +137,11 @@ export function renderHand(container, state, ui, handlers) {
   for (const card of pl.hand) {
     const def = CARD_DEFS[card.kind];
     const affordable = pl.ap >= def.apCost
-      && pl.supply >= (def.cost.supply || 0)
-      && pl.influence >= (def.cost.influence || 0)
-      && pl.research >= (def.cost.research || 0)
-      && !(def.once && pl.specialization);
+      && Object.entries(def.cost).every(([k, v]) => (pl[k] || 0) >= v)
+      && !(def.once && pl.specialization)
+      && !(def.minGateLevel && (pl.gateLevel || 1) < def.minGateLevel);
     const cardEl = el('div', { class: `card card-${def.type} ${affordable ? '' : 'card-disabled'} ${ui.selectedCardUid === card.uid ? 'card-selected' : ''}` });
-    const costParts = [];
-    if (def.cost.supply) costParts.push(`물자${def.cost.supply}`);
-    if (def.cost.influence) costParts.push(`영향력${def.cost.influence}`);
-    if (def.cost.research) costParts.push(`연구${def.cost.research}`);
+    const costParts = Object.entries(def.cost).map(([k, v]) => `${RES_LABEL[k] || k}${v}`);
     cardEl.innerHTML = `
       <div class="card-name">${def.name}</div>
       <div class="card-cost">AP${def.apCost}${costParts.length ? ' · ' + costParts.join(' ') : ''}</div>
@@ -174,6 +189,40 @@ export function renderOrderPanel(container, state, ui, handlers) {
   const marchHint = el('div', { class: 'hint' });
   marchHint.textContent = '진군하려면 지도에서 인접한 노드를 클릭하세요.';
   container.appendChild(marchHint);
+}
+
+export function renderSetup(container, setup, handlers) {
+  container.classList.remove('hidden');
+  const raceCard = (side, raceKey) => {
+    const info = RACE_INFO[raceKey];
+    const selected = setup[side] === raceKey;
+    return `
+      <div class="race-card ${selected ? 'race-selected' : ''}" data-side="${side}" data-race="${raceKey}">
+        <div class="race-name">${info.name}</div>
+        <div class="race-desc">${info.desc}</div>
+      </div>
+    `;
+  };
+  const raceKeys = Object.keys(RACE_INFO);
+  container.innerHTML = `
+    <div class="setup-box">
+      <h2>OATHFALL — 종족 선택</h2>
+      <p class="hint">P1(당신, 파랑)과 P2(AI, 빨강)의 종족을 각각 선택하세요.</p>
+      <div class="setup-side">
+        <h3>P1 (플레이어)</h3>
+        <div class="race-grid" data-role="P1">${raceKeys.map((r) => raceCard('P1', r)).join('')}</div>
+      </div>
+      <div class="setup-side">
+        <h3>P2 (AI)</h3>
+        <div class="race-grid" data-role="P2">${raceKeys.map((r) => raceCard('P2', r)).join('')}</div>
+      </div>
+      <button id="start-game-btn" class="btn btn-primary">게임 시작</button>
+    </div>
+  `;
+  container.querySelectorAll('.race-card').forEach((elCard) => {
+    elCard.addEventListener('click', () => handlers.onPickRace(elCard.dataset.side, elCard.dataset.race));
+  });
+  container.querySelector('#start-game-btn').addEventListener('click', () => handlers.onStartGame());
 }
 
 export function renderVictory(container, state) {

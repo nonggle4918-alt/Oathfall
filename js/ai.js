@@ -1,80 +1,104 @@
-// 더미 AI (M1: "핫싯 + 더미 AI" — 최소 휴리스틱). 상태를 직접 바꾸지 않고
-// 이번 턴에 실행할 액션 목록만 생성한다. 실제 반영은 main.js가 reduce()로 처리한다.
+// 더미 AI (M1/M2: "핫싯 + 더미 AI" — 최소 휴리스틱, 종족 불문 동작).
+// 상태를 직접 바꾸지 않고 이번 턴에 실행할 액션 목록만 생성한다.
+// 카드 kind 문자열을 하드코딩하지 않고 CARD_DEFS의 메타데이터(type/effect/spawnPower 등)로
+// 판단하므로 4종족 어느 덱이 와도 동일한 로직으로 동작한다.
 
 import { CARD_DEFS } from './cards.js';
 import { ADJACENCY, DUMP_NODE_IDS } from './mapData.js';
 
 function affordable(sim, def) {
-  return sim.ap >= def.apCost
-    && sim.supply >= (def.cost.supply || 0)
-    && sim.influence >= (def.cost.influence || 0)
-    && sim.research >= (def.cost.research || 0);
+  if (sim.ap < def.apCost) return false;
+  return Object.entries(def.cost).every(([k, v]) => (sim[k] || 0) >= v);
+}
+function pay(sim, def) {
+  sim.ap -= def.apCost;
+  for (const [k, v] of Object.entries(def.cost)) sim[k] -= v;
 }
 
 export function getAiActions(state, aiPlayer) {
   const actions = [];
   const pl = state.players[aiPlayer];
   const enemy = aiPlayer === 'P1' ? 'P2' : 'P1';
-  const sim = { ap: pl.ap, supply: pl.supply, influence: pl.influence, research: pl.research };
+  const sim = { ap: pl.ap, supply: pl.supply, influence: pl.influence, research: pl.research, zeal: pl.zeal, rift: pl.rift, spore: pl.spore };
   const hand = [...pl.hand];
 
   const myNodeIds = () => Object.keys(state.nodes).filter((id) => state.nodes[id].owner === aiPlayer);
+  const take = (card) => hand.splice(hand.indexOf(card), 1);
 
-  // 1) 연구 특화 (아직 안 했고 여유 있으면 최우선)
+  // 1) 1회성 연구 특화 카드 (왕국 전용이지만 kind-agnostic하게 def.once로 판단)
   if (!pl.specialization) {
-    const pathCard = hand.find((c) => c.kind === 'pathMilitary') || hand.find((c) => c.kind === 'pathHero') || hand.find((c) => c.kind === 'pathFaith');
+    const pathCard = hand.find((c) => CARD_DEFS[c.kind].once);
     if (pathCard) {
       const def = CARD_DEFS[pathCard.kind];
       if (affordable(sim, def)) {
         actions.push({ type: 'PLAY_CARD', player: aiPlayer, cardUid: pathCard.uid });
-        sim.ap -= def.apCost; sim.research -= (def.cost.research || 0);
-        hand.splice(hand.indexOf(pathCard), 1);
+        pay(sim, def); take(pathCard);
       }
     }
   }
 
-  // 2) 건물 카드: 건물 없는 내 노드에 부착 (수도/영지 우선)
-  const buildingKinds = ['granary', 'temple', 'library', 'fortress'];
-  for (const kind of buildingKinds) {
-    const card = hand.find((c) => c.kind === kind);
-    if (!card) continue;
-    const def = CARD_DEFS[kind];
+  // 2) 종족 고유 자원 액션 (희생/차원문 확장/감염/역병 가속) — 여유 자원이 있을 때 우선 시도
+  for (const card of [...hand]) {
+    const def = CARD_DEFS[card.kind];
+    if (!def.effect) continue;
+    if (!affordable(sim, def)) continue;
+
+    if (def.effect === 'sacrifice') {
+      const targetId = myNodeIds().find((id) => state.nodes[id].army && state.nodes[id].army.owner === aiPlayer && state.nodes[id].army.power > def.sacrificeAmount + 2);
+      if (!targetId) continue;
+      actions.push({ type: 'PLAY_CARD', player: aiPlayer, cardUid: card.uid, targetNodeId: targetId });
+      pay(sim, def); take(card);
+    } else if (def.effect === 'gateExpand') {
+      if ((pl.gateLevel || 1) >= 5) continue;
+      actions.push({ type: 'PLAY_CARD', player: aiPlayer, cardUid: card.uid });
+      pay(sim, def); take(card);
+    } else if (def.effect === 'infect') {
+      const targetId = findInfectableNode(state, aiPlayer);
+      if (!targetId) continue;
+      actions.push({ type: 'PLAY_CARD', player: aiPlayer, cardUid: card.uid, targetNodeId: targetId });
+      pay(sim, def); take(card);
+    } else if (def.effect === 'plagueAccelerate') {
+      const hasActive = Object.values(state.nodes).some((n) => n.infested && n.infested.owner === aiPlayer);
+      if (!hasActive) continue;
+      actions.push({ type: 'PLAY_CARD', player: aiPlayer, cardUid: card.uid });
+      pay(sim, def); take(card);
+    }
+  }
+
+  // 3) 건물 카드: 건물 없는 내 노드에 부착
+  for (const card of hand.filter((c) => CARD_DEFS[c.kind].type === 'building')) {
+    const def = CARD_DEFS[card.kind];
     if (!affordable(sim, def)) continue;
     const targetId = myNodeIds().find((id) => !state.nodes[id].building);
     if (!targetId) continue;
     actions.push({ type: 'PLAY_CARD', player: aiPlayer, cardUid: card.uid, targetNodeId: targetId });
-    sim.ap -= def.apCost; sim.supply -= (def.cost.supply || 0);
-    hand.splice(hand.indexOf(card), 1);
-    state = { ...state, nodes: { ...state.nodes, [targetId]: { ...state.nodes[targetId], building: kind } } };
+    pay(sim, def); take(card);
+    state = { ...state, nodes: { ...state.nodes, [targetId]: { ...state.nodes[targetId], building: card.kind } } };
   }
 
-  // 3) 군사 카드: 최전방(적/캠프에 가장 가까운 내 노드)에 병력 소환
-  const frontierNodeId = findFrontierNode(state, aiPlayer, enemy);
-  const militaryKinds = ['heroAwaken', 'regulars', 'militia'];
-  for (const kind of militaryKinds) {
-    const card = hand.find((c) => c.kind === kind);
-    if (!card) continue;
-    const def = CARD_DEFS[kind];
+  // 4) 군사 카드(전력 소환): 최전방 노드에 배치
+  const frontierNodeId = findFrontierNode(state, aiPlayer);
+  for (const card of hand.filter((c) => CARD_DEFS[c.kind].spawnPower)) {
+    const def = CARD_DEFS[card.kind];
     if (!affordable(sim, def)) continue;
     if (!frontierNodeId) break;
     actions.push({ type: 'PLAY_CARD', player: aiPlayer, cardUid: card.uid, targetNodeId: frontierNodeId });
-    sim.ap -= def.apCost; sim.supply -= (def.cost.supply || 0); sim.research -= (def.cost.research || 0);
-    hand.splice(hand.indexOf(card), 1);
+    pay(sim, def); take(card);
     if (sim.ap <= 0) break;
   }
 
-  // 4) 자투리 AP로 유틸 카드 (재보급/정보수집)
+  // 5) 자투리 AP로 유틸 카드
   for (const kind of ['resupply', 'intel']) {
     const card = hand.find((c) => c.kind === kind);
     if (!card) continue;
     const def = CARD_DEFS[kind];
     if (!affordable(sim, def)) continue;
     actions.push({ type: 'PLAY_CARD', player: aiPlayer, cardUid: card.uid });
-    sim.ap -= def.apCost;
+    pay(sim, def);
     if (sim.ap <= 0) break;
   }
 
-  // 5) 병력 명령: 내가 가진 모든 부대에 대해 진군/방어 판단
+  // 6) 병력 명령: 내가 가진 모든 부대에 대해 진군/방어 판단
   for (const nodeId of myNodeIds()) {
     const node = state.nodes[nodeId];
     if (!node.army || node.army.owner !== aiPlayer) continue;
@@ -84,13 +108,13 @@ export function getAiActions(state, aiPlayer) {
       const nbNode = state.nodes[nb];
       let score = -1;
       if (nbNode.owner === enemy && nbNode.army) {
-        score = node.army.power - nbNode.army.power * 1.3 + 5; // 이길 만하면 공격
+        score = node.army.power - nbNode.army.power * 1.3 + 5;
       } else if (nbNode.type === 'neutralCamp' && nbNode.garrison > 0) {
         score = node.army.power - nbNode.garrison + 3;
       } else if (nbNode.owner === null) {
-        score = 4; // 무주지 확장은 항상 남는 장사
+        score = 4;
       } else if (nbNode.owner === aiPlayer) {
-        score = -10; // 이미 내 땅이면 굳이 안 감
+        score = -10;
       }
       if (score > bestScore) { bestScore = score; bestTarget = nb; }
     }
@@ -106,11 +130,24 @@ export function getAiActions(state, aiPlayer) {
   return actions;
 }
 
-function findFrontierNode(state, aiPlayer, enemy) {
+function findFrontierNode(state, aiPlayer) {
   const myNodes = Object.keys(state.nodes).filter((id) => state.nodes[id].owner === aiPlayer);
-  // 매립지 인접 내 노드를 우선, 없으면 아무 내 노드
   for (const id of myNodes) {
     if ((ADJACENCY[id] || []).some((nb) => DUMP_NODE_IDS.includes(nb))) return id;
   }
   return myNodes[0] || null;
+}
+
+function findInfectableNode(state, aiPlayer) {
+  const myNodes = Object.keys(state.nodes).filter((id) => state.nodes[id].owner === aiPlayer);
+  for (const id of myNodes) {
+    for (const nb of ADJACENCY[id] || []) {
+      const n = state.nodes[nb];
+      if (n.type === 'capital') continue;
+      if (n.owner === aiPlayer) continue;
+      if (n.infested && n.infested.owner === aiPlayer) continue;
+      return nb;
+    }
+  }
+  return null;
 }

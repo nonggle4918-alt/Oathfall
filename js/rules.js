@@ -1,8 +1,8 @@
 // 순수 룰 엔진. reduce(state, action) -> state 외에는 아무것도 모른다 (§2 원칙 2).
 // 네트워크·렌더링·저장을 몰라야 Firebase 연동(2단계) 시 코어를 그대로 승격할 수 있다.
 
-import { NODES, EDGES, ADJACENCY, DUMP_NODE_IDS, NEUTRAL_CAMP_GARRISON, NEUTRAL_CAMP_REWARD, STARTING_ARMY_POWER } from './mapData.js';
-import { CARD_DEFS, buildDeck } from './cards.js';
+import { NODES, ADJACENCY, DUMP_NODE_IDS, NEUTRAL_CAMP_GARRISON, NEUTRAL_CAMP_REWARD, STARTING_ARMY_POWER } from './mapData.js';
+import { CARD_DEFS, BUILDING_INCOME, buildDeck } from './cards.js';
 import { seededVariance } from './rng.js';
 
 export const PLAYER_ORDER = ['P1', 'P2'];
@@ -18,6 +18,7 @@ function clone(x) {
 }
 
 export function initGame(seed, opts = {}) {
+  const races = opts.races || { P1: 'kingdom', P2: 'kingdom' };
   const nodes = {};
   for (const [id, def] of Object.entries(NODES)) {
     nodes[id] = {
@@ -26,15 +27,17 @@ export function initGame(seed, opts = {}) {
       building: null,
       garrison: def.type === 'neutralCamp' ? NEUTRAL_CAMP_GARRISON : 0,
       army: def.type === 'capital' ? { owner: def.owner, power: STARTING_ARMY_POWER, stance: 'defend', hero: false } : null,
+      infested: null,
     };
   }
 
   const players = {};
   for (const p of PLAYER_ORDER) {
     players[p] = {
-      race: 'kingdom',
-      supply: 5, influence: 2, research: 0, ap: 0,
-      hand: [], deck: buildDeck(seed, p), discard: [],
+      race: races[p] || 'kingdom',
+      supply: 5, influence: 2, research: 0, zeal: 0, rift: 0, spore: 0, ap: 0,
+      gateLevel: 1,
+      hand: [], deck: buildDeck(seed, p, races[p] || 'kingdom'), discard: [],
       specialization: null,
       isAI: opts.aiPlayers ? opts.aiPlayers.includes(p) : p === 'P2',
     };
@@ -49,9 +52,7 @@ export function initGame(seed, opts = {}) {
     log: [],
   };
 
-  for (const p of PLAYER_ORDER) {
-    state = drawCards(state, p, START_HAND);
-  }
+  for (const p of PLAYER_ORDER) state = drawCards(state, p, START_HAND);
   state = startTurn(state, 'P1');
   return state;
 }
@@ -76,29 +77,27 @@ function drawCards(state, player, count) {
 }
 
 function nodeIncome(node) {
-  const type = node.type;
-  const base = { supply: 0, influence: 0, research: 0 };
-  if (type === 'capital') { base.supply += 3; base.influence += 1; }
-  else if (type === 'territory') { base.supply += 2; }
-  else if (type === 'sanctuary') { base.influence += 2; }
-  else if (type === 'dump') { base.supply += 2; base.influence += 2; }
-  if (node.building === 'granary') base.supply += 2;
-  if (node.building === 'temple') base.influence += 2;
-  if (node.building === 'library') base.research += 1;
+  const base = { supply: 0, influence: 0, research: 0, zeal: 0, rift: 0, spore: 0 };
+  if (node.type === 'capital') { base.supply += 3; base.influence += 1; }
+  else if (node.type === 'territory') { base.supply += 2; }
+  else if (node.type === 'sanctuary') { base.influence += 2; }
+  else if (node.type === 'dump') { base.supply += 2; base.influence += 2; }
+  const bi = node.building ? BUILDING_INCOME[node.building] : null;
+  if (bi) for (const [k, v] of Object.entries(bi)) base[k] = (base[k] || 0) + v;
   return base;
 }
 
 function startTurn(state, player) {
   const pl = state.players[player];
-  let inc = { supply: 0, influence: 0, research: 0 };
+  const inc = { supply: 0, influence: 0, research: 0, zeal: 0, rift: 0, spore: 0 };
   for (const node of Object.values(state.nodes)) {
     if (node.owner === player) {
       const i = nodeIncome(node);
-      inc.supply += i.supply; inc.influence += i.influence; inc.research += i.research;
+      for (const k of Object.keys(inc)) inc[k] += i[k] || 0;
     }
   }
   if (pl.specialization === 'faith') inc.influence += 2;
-  pl.supply += inc.supply; pl.influence += inc.influence; pl.research += inc.research;
+  for (const k of Object.keys(inc)) pl[k] += inc[k];
   pl.ap = AP_PER_TURN;
   state.ordersUsedThisTurn = [];
   state.activePlayer = player;
@@ -106,16 +105,19 @@ function startTurn(state, player) {
   for (const node of Object.values(state.nodes)) {
     if (node.army && node.army.owner === player && node.army.forcedMarchBonus) node.army.forcedMarchBonus = false;
   }
-  pushLog(state, `--- ${player} 턴 시작 (물자+${inc.supply} 영향력+${inc.influence} 연구+${inc.research}) ---`);
+  const incText = Object.entries(inc).filter(([, v]) => v > 0).map(([k, v]) => `${RES_LABEL[k]}+${v}`).join(' ') || '없음';
+  pushLog(state, `--- ${player} 턴 시작 (${incText}) ---`);
   state = drawCards(state, player, DRAW_PER_TURN);
   return state;
 }
 
+const RES_LABEL = { supply: '물자', influence: '영향력', research: '연구', zeal: '광신', rift: '균열력', spore: '포자' };
+
 function canAfford(pl, cost) {
-  return (pl.supply >= (cost.supply || 0)) && (pl.influence >= (cost.influence || 0)) && (pl.research >= (cost.research || 0));
+  return Object.entries(cost).every(([k, v]) => (pl[k] || 0) >= v);
 }
 function payCost(pl, cost) {
-  pl.supply -= (cost.supply || 0); pl.influence -= (cost.influence || 0); pl.research -= (cost.research || 0);
+  for (const [k, v] of Object.entries(cost)) pl[k] -= v;
 }
 
 function powerMultiplier(state, player) {
@@ -128,7 +130,6 @@ function checkConquest(state) {
 }
 
 function resolveCombat(state, attackerPlayer, attackerRawPower, defenderPlayer, defenderRawPower, opts) {
-  // opts: { defenderStance, terrainMult, heroVsCamp }
   const c1 = state.rngCounter++;
   const c2 = state.rngCounter++;
   const stanceMult = opts.defenderStance === 'defend' ? 1.3 : opts.defenderStance === 'retreat' ? 0.5 : 1.0;
@@ -170,6 +171,30 @@ function updateDumpDomination(state) {
   }
 }
 
+// 감염체 §6.4: 감염 진행 노드는 라운드가 끝날 때마다 카운트다운되어 0이 되면 소유권이 넘어간다.
+function tickInfestation(state) {
+  for (const [id, node] of Object.entries(state.nodes)) {
+    if (!node.infested) continue;
+    node.infested.roundsLeft -= 1;
+    if (node.infested.roundsLeft <= 0) {
+      const owner = node.infested.owner;
+      node.owner = owner;
+      node.infested = null;
+      pushLog(state, `${id} 노드가 감염 완료되어 ${owner} 소유가 되었다`);
+    }
+  }
+  if (state.phase !== 'ended') checkConquest(state);
+}
+
+function applyInfestedResidual(state, infestedPlayer, nodeId) {
+  const node = state.nodes[nodeId];
+  if (!node || node.type === 'capital') return;
+  if (node.owner === infestedPlayer && !node.infested) return;
+  node.infested = { owner: infestedPlayer, roundsLeft: 2 };
+  state.players[infestedPlayer].spore += 2;
+  pushLog(state, `${infestedPlayer}: 전투의 여파로 ${nodeId}에 포자가 남았다 (감염 시작)`);
+}
+
 function computeScore(state, player) {
   let nodesOwned = 0, dumps = 0;
   for (const [id, node] of Object.entries(state.nodes)) {
@@ -187,11 +212,18 @@ function finalizeScoreVictory(state) {
   else { state.winner = s1 > s2 ? 'P1' : 'P2'; pushLog(state, `12라운드 종료. 점수 P1 ${s1} : P2 ${s2} — ${state.winner} 승리`); }
 }
 
-function targetValid(state, player, node, filter) {
+function targetValid(state, player, nodeId, filter) {
+  const node = state.nodes[nodeId];
   if (!node) return false;
   if (filter === 'owned') return node.owner === player;
   if (filter === 'ownedNoBuilding') return node.owner === player && !node.building;
   if (filter === 'ownedWithArmy') return node.owner === player && node.army && node.army.owner === player;
+  if (filter === 'infectable') {
+    if (node.type === 'capital') return false;
+    if (node.owner === player) return false;
+    if (node.infested && node.infested.owner === player) return false;
+    return (ADJACENCY[nodeId] || []).some((nb) => state.nodes[nb].owner === player);
+  }
   return true;
 }
 
@@ -212,8 +244,9 @@ export function reduce(state, action) {
       if (pl.ap < def.apCost) { pushLog(state, `AP 부족으로 ${def.name} 사용 실패`); return state; }
       if (!canAfford(pl, def.cost)) { pushLog(state, `자원 부족으로 ${def.name} 사용 실패`); return state; }
       if (def.once && pl.specialization) { pushLog(state, `이미 연구를 특화하여 ${def.name} 사용 불가`); return state; }
+      if (def.minGateLevel && (pl.gateLevel || 1) < def.minGateLevel) { pushLog(state, `차원문 레벨 부족으로 ${def.name} 사용 실패`); return state; }
       const targetNode = targetNodeId ? state.nodes[targetNodeId] : null;
-      if (def.needsTarget && !targetValid(state, player, targetNode, def.targetFilter)) {
+      if (def.needsTarget && !targetValid(state, player, targetNodeId, def.targetFilter)) {
         pushLog(state, `${def.name}의 대상이 유효하지 않음`); return state;
       }
 
@@ -222,35 +255,54 @@ export function reduce(state, action) {
       pl.hand.splice(idx, 1);
       pl.discard.push(card);
 
-      switch (card.kind) {
-        case 'granary': case 'temple': case 'fortress': case 'library':
-          targetNode.building = card.kind; break;
-        case 'militia': case 'regulars': {
-          if (!targetNode.army) targetNode.army = { owner: player, power: 0, stance: 'defend', hero: false };
-          targetNode.army.power += def.spawnPower;
-          break;
+      if (def.type === 'building') {
+        targetNode.building = card.kind;
+        pushLog(state, `${player}: ${def.name} 사용 (대상 ${targetNodeId})`);
+      } else if (def.effect === 'sacrifice') {
+        if (!targetNode.army) { pushLog(state, `${player}: 제물로 바칠 부대가 없다`); return state; }
+        const consumed = Math.min(def.sacrificeAmount, targetNode.army.power);
+        targetNode.army.power -= consumed;
+        let zealGain = consumed;
+        if (targetNode.building === 'cult_grandAltar') zealGain = Math.round(zealGain * 1.5);
+        pl.zeal += zealGain;
+        if (targetNode.army.power <= 0) targetNode.army = null;
+        pushLog(state, `${player}: ${def.name} — ${targetNodeId}에서 전력 ${consumed} 제물, 광신 +${zealGain}`);
+      } else if (def.effect === 'gateExpand') {
+        pl.gateLevel = Math.min(5, (pl.gateLevel || 1) + 1);
+        pushLog(state, `${player}: ${def.name} — 차원문 레벨 ${pl.gateLevel}`);
+      } else if (def.effect === 'infect') {
+        targetNode.infested = { owner: player, roundsLeft: def.infectRounds || 2 };
+        pushLog(state, `${player}: ${def.name} — ${targetNodeId} 감염 시작 (${def.infectRounds}라운드 후 완료)`);
+      } else if (def.effect === 'plagueAccelerate') {
+        let count = 0;
+        for (const node of Object.values(state.nodes)) {
+          if (node.infested && node.infested.owner === player) { node.infested.roundsLeft = Math.max(0, node.infested.roundsLeft - 1); count++; }
         }
-        case 'heroAwaken': {
-          if (!targetNode.army) targetNode.army = { owner: player, power: 0, stance: 'defend', hero: false };
-          targetNode.army.power += def.spawnPower;
-          targetNode.army.hero = true;
-          break;
-        }
-        case 'forcedMarch': targetNode.army.forcedMarchBonus = true; break;
-        case 'resupply': pl.supply += 3; break;
-        case 'intel': pl.influence += 3; break;
-        case 'pathFaith': pl.specialization = 'faith'; break;
-        case 'pathMilitary': pl.specialization = 'military'; break;
-        case 'pathHero': {
-          pl.specialization = 'hero';
-          const capId = player === 'P1' ? 'C1' : 'C2';
-          const cap = state.nodes[capId];
-          if (!cap.army) cap.army = { owner: player, power: 0, stance: 'defend', hero: false };
-          cap.army.power += 6; cap.army.hero = true;
-          break;
-        }
+        pushLog(state, `${player}: ${def.name} — 진행 중인 감염 ${count}건 가속`);
+      } else if (def.spawnPower) {
+        if (!targetNode.army) targetNode.army = { owner: player, power: 0, stance: 'defend', hero: false };
+        let power = def.spawnPower;
+        if (def.scalesWithGate) power += (pl.gateLevel || 1) * (def.gatePowerMult || 0);
+        targetNode.army.power += power;
+        if (def.hero) targetNode.army.hero = true;
+        pushLog(state, `${player}: ${def.name} 사용 (대상 ${targetNodeId}, 전력 +${power})`);
+      } else if (card.kind === 'resupply') {
+        pl.supply += 3; pushLog(state, `${player}: ${def.name} 사용`);
+      } else if (card.kind === 'intel') {
+        pl.influence += 3; pushLog(state, `${player}: ${def.name} 사용`);
+      } else if (card.kind === 'forcedMarch') {
+        targetNode.army.forcedMarchBonus = true; pushLog(state, `${player}: ${def.name} 사용 (대상 ${targetNodeId})`);
+      } else if (card.kind === 'pathFaith') {
+        pl.specialization = 'faith'; pushLog(state, `${player}: 연구 특화 — 신앙`);
+      } else if (card.kind === 'pathMilitary') {
+        pl.specialization = 'military'; pushLog(state, `${player}: 연구 특화 — 군부`);
+      } else if (card.kind === 'pathHero') {
+        pl.specialization = 'hero';
+        const cap = state.nodes[player === 'P1' ? 'C1' : 'C2'];
+        if (!cap.army) cap.army = { owner: player, power: 0, stance: 'defend', hero: false };
+        cap.army.power += def.grantHeroAtCapital || 6; cap.army.hero = true;
+        pushLog(state, `${player}: 연구 특화 — 용사`);
       }
-      pushLog(state, `${player}: ${def.name} 사용${targetNodeId ? ` (대상 ${targetNodeId})` : ''}`);
       return state;
     }
 
@@ -283,18 +335,17 @@ export function reduce(state, action) {
       const isGarrisonedCamp = toNode.type === 'neutralCamp' && toNode.owner === null && toNode.garrison > 0;
 
       if (!isEnemyArmy && !isGarrisonedCamp) {
-        // 평화적 이동/합류/무혈 점령
         if (toNode.owner === player && toNode.army) {
           toNode.army.power += movingArmy.power;
           toNode.army.hero = toNode.army.hero || movingArmy.hero;
         } else {
           toNode.owner = player;
           toNode.army = { owner: player, power: movingArmy.power, stance: 'defend', hero: movingArmy.hero };
+          if (toNode.infested && toNode.infested.owner === player) toNode.infested = null;
         }
         fromNode.army = null;
         pushLog(state, `${player}: ${fromNodeId} → ${toNodeId} 진군 (무혈 점령/합류)`);
       } else {
-        // 전투
         const defenderPlayer = toNode.army ? toNode.army.owner : null;
         const defenderRawPower = toNode.army ? toNode.army.power : toNode.garrison;
         const terrainMult = toNode.type === 'capital' ? 1.5 : toNode.building === 'fortress' ? 1.25 : 1.0;
@@ -304,11 +355,16 @@ export function reduce(state, action) {
           terrainMult, heroVsCamp, forcedMarch,
         });
 
+        const attackerRace = state.players[player].race;
+        const defenderRace = defenderPlayer ? state.players[defenderPlayer].race : null;
+
         if (result.bothDestroyed) {
           fromNode.army = null;
           toNode.army = null;
           if (isGarrisonedCamp) toNode.garrison = 0;
           pushLog(state, `${player}: ${fromNodeId} → ${toNodeId} 전투 — 양측 전멸`);
+          if (attackerRace === 'infested') applyInfestedResidual(state, player, toNodeId);
+          if (defenderRace === 'infested') applyInfestedResidual(state, defenderPlayer, toNodeId);
         } else if (result.attackerWins) {
           fromNode.army = null;
           const wasCamp = isGarrisonedCamp;
@@ -316,21 +372,22 @@ export function reduce(state, action) {
           toNode.army = { owner: player, power: result.attackerSurvivorRaw, stance: 'defend', hero: movingArmy.hero };
           if (wasCamp) {
             toNode.garrison = 0;
-            const pl = state.players[player];
-            pl.supply += NEUTRAL_CAMP_REWARD.supply;
-            pl.influence += NEUTRAL_CAMP_REWARD.influence;
+            const rewardPl = state.players[player];
+            rewardPl.supply += NEUTRAL_CAMP_REWARD.supply;
+            rewardPl.influence += NEUTRAL_CAMP_REWARD.influence;
             state = drawCards(state, player, NEUTRAL_CAMP_REWARD.drawCards);
             pushLog(state, `${player}: ${fromNodeId} → ${toNodeId} 캠프 격파! 보상 획득 (물자+${NEUTRAL_CAMP_REWARD.supply} 영향력+${NEUTRAL_CAMP_REWARD.influence} 카드+${NEUTRAL_CAMP_REWARD.drawCards})`);
           } else {
             pushLog(state, `${player}: ${fromNodeId} → ${toNodeId} 전투 승리, 노드 점령`);
           }
+          if (defenderRace === 'infested') applyInfestedResidual(state, defenderPlayer, toNodeId);
         } else if (result.defenderWins) {
           fromNode.army = null;
           if (toNode.army) toNode.army.power = result.defenderSurvivorRaw;
           else toNode.garrison = result.defenderSurvivorRaw;
           pushLog(state, `${player}: ${fromNodeId} → ${toNodeId} 전투 패배, 부대 전멸`);
+          if (attackerRace === 'infested') applyInfestedResidual(state, player, toNodeId);
         } else {
-          // 양측 생존 — 방어측 노드 유지, 공격측 원위치 후퇴
           if (toNode.army) toNode.army.power = result.defenderSurvivorRaw;
           else toNode.garrison = result.defenderSurvivorRaw;
           fromNode.army = { owner: player, power: result.attackerSurvivorRaw, stance: 'defend', hero: movingArmy.hero };
@@ -347,6 +404,8 @@ export function reduce(state, action) {
       const idx = PLAYER_ORDER.indexOf(player);
       const isLast = idx === PLAYER_ORDER.length - 1;
       if (isLast) {
+        tickInfestation(state);
+        if (state.phase === 'ended') return state;
         updateDumpDomination(state);
         if (state.phase === 'ended') return state;
         if (state.round >= ROUND_CAP) { finalizeScoreVictory(state); return state; }
@@ -363,4 +422,4 @@ export function reduce(state, action) {
   }
 }
 
-export { ADJACENCY, EDGES, DUMP_NODE_IDS, targetValid };
+export { ADJACENCY, DUMP_NODE_IDS, targetValid };
