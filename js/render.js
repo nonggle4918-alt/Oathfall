@@ -1,6 +1,6 @@
 import { ADJACENCY, DUMP_NODE_IDS, NODE_NAMES, MAP_VIEWBOX } from './mapData.js';
 import { NODE_TYPES } from './mapData.js';
-import { CARD_DEFS, RACE_INFO, RACE_SECONDARY, resolveCost } from './cards.js';
+import { CARD_DEFS, RACE_INFO, RACE_SECONDARY, RACE_SPECIAL_ABILITY, resolveCost } from './cards.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const OWNER_COLOR = { P1: '#3b82f6', P2: '#ef4444', neutral: '#475569' };
@@ -127,6 +127,7 @@ export function renderResourceBar(container, state) {
     const pl = state.players[p];
     const raceInfo = RACE_INFO[pl.race];
     const sec = RACE_SECONDARY[pl.race];
+    const ability = RACE_SPECIAL_ABILITY[pl.race];
     const box = el('div', { class: `res-box res-${p}` });
     const secLine = sec.isCurrency
       ? `${sec.name} ${pl[sec.key]}`
@@ -136,6 +137,7 @@ export function renderResourceBar(container, state) {
       <div class="res-line">물자 ${pl.supply} · 수도 티어 ${pl.capitalTier}/4</div>
       <div class="res-line">${raceInfo.resourceName} ${pl[raceInfo.resource]} · ${secLine}</div>
       <div class="res-line">AP ${pl.ap}${pl.specialization ? ' · 특화: ' + specName(pl.specialization) : ''}</div>
+      <div class="res-line res-ability" title="${ability.desc}">특수능력: ${ability.name}</div>
     `;
     container.appendChild(box);
   }
@@ -215,11 +217,13 @@ export function renderSetup(container, setup, handlers) {
   container.classList.remove('hidden');
   const raceCard = (side, raceKey) => {
     const info = RACE_INFO[raceKey];
+    const ability = RACE_SPECIAL_ABILITY[raceKey];
     const selected = setup[side] === raceKey;
     return `
       <div class="race-card ${selected ? 'race-selected' : ''}" data-side="${side}" data-race="${raceKey}">
         <div class="race-name">${info.name}</div>
         <div class="race-desc">${info.desc}</div>
+        <div class="race-ability"><strong>특수능력 · ${ability.name}</strong> — ${ability.desc}</div>
       </div>
     `;
   };

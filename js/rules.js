@@ -10,8 +10,11 @@
 //    노드(수도 포함)를 감염시키면 소유권은 그대로 두고 생산/방어를 깎는 "디버프"로 완료된다
 //    (방어군 주둔 시 진행 정지는 동일). 완료 지점은 영구 "포자 지대"가 되어 감염체 부대를
 //    강화한다(저그 크립과 유사) + 낮은 확률로 자연 확산.
-//  - 종족별 패시브 특성(카드 없이 항상 적용): 왕국-영지 물류, 광신도-출혈 경제,
-//    차원 괴물-차원문 서지(후반 캐리), 감염체-자연 확산.
+//  - 외교(조약) 시스템은 완전히 제외한다. 예전에 외교에 묶여 있던 종족 정체성은 여기서
+//    "종족 특수 능력"(카드 없이 항상 적용되는 패시브)으로 분리됐다 — 이름/설명은
+//    cards.js의 RACE_SPECIAL_ABILITY, 실제 수치는 아래 각 함수에 있다:
+//    왕국="영지 총동원령"(nodeIncome), 광신도="출혈의 계약"(ISSUE_MARCH 전투 분기),
+//    차원 괴물="차원 공명"(powerMultiplier), 감염체="자가 증식"(maybeAutoSpread).
 //  - AP: 라운드 자동 증가는 공용 상한 4까지. 그 위로는 종족별 진행축에 따라 각기 다르게
 //    더 늘어난다 — 차원 괴물/감염체는 자신의 티어 스탯(차원문/감염력)이 4·5를 찍을 때마다
 //    +1씩(최대 +2), 왕국/광신도는 수도 티어 4에서 +1.
@@ -173,7 +176,7 @@ function startTurn(state, player) {
     if (node.building && AP_BONUS_BUILDINGS[node.building]) apBonus += AP_BONUS_BUILDINGS[node.building];
   }
   if (pl.specialization === 'faith') inc.authority += 2;
-  // 왕국 특성 — 영지 물류: 소유한 영지(territory) 하나당 물자 +1 (넓게 펴는 물량형 정체성 강화)
+  // 왕국 종족 특수 능력 — 영지 총동원령: 소유한 영지(territory) 하나당 물자 +1 (넓게 펴는 물량형 정체성 강화)
   if (pl.race === 'kingdom') inc.supply += ownedTerritoryCount;
   for (const k of Object.keys(inc)) pl[k] += inc[k];
   pl.ap = baseApForRound(state.round) + Math.min(AP_BONUS_CAP, apBonus) + raceApBonus(pl);
@@ -203,7 +206,7 @@ function payCost(pl, cost) {
 function powerMultiplier(state, player) {
   const pl = state.players[player];
   let mult = pl.specialization === 'military' ? 1.1 : 1.0;
-  // 차원 괴물 특성 — 차원문 서지: 차원문 티어가 오를수록 소환수뿐 아니라 부대 전투력 자체가 강해진다 (후반 캐리형).
+  // 차원 괴물 종족 특수 능력 — 차원 공명: 차원문 티어가 오를수록 소환수뿐 아니라 부대 전투력 자체가 강해진다 (후반 캐리형).
   if (pl.race === 'rift') mult *= 1 + 0.08 * (pl.gateLevel || 1);
   return mult;
 }
@@ -296,7 +299,7 @@ function tickInfestation(state) {
   if (state.phase !== 'ended') checkConquest(state);
 }
 
-// 감염체 특성 — 자연 확산: 감염 완료 지점에서 40% 확률로 인접 노드에 무료로 감염이 새로 시작된다.
+// 감염체 종족 특수 능력 — 자가 증식: 감염 완료 지점에서 40% 확률로 인접 노드에 무료로 감염이 새로 시작된다.
 // (저그 크립처럼, 포자 지대가 스스로 번져나가는 느낌을 준다)
 function maybeAutoSpread(state, player, fromId) {
   const pl = state.players[player];
@@ -555,7 +558,7 @@ export function reduce(state, action) {
           terrainMult, heroVsCamp, forcedMarch, attackerSporeZone, defenderSporeZone,
         });
 
-        // 광신도 특성 — 출혈 경제: 전투가 벌어지면(승패 무관) 양측이 잃은 전력에 비례해 광신을 자동 획득한다.
+        // 광신도 종족 특수 능력 — 출혈의 계약: 전투가 벌어지면(승패 무관) 양측이 잃은 전력에 비례해 광신을 자동 획득한다.
         if (attackerRace === 'cultists') {
           const gain = Math.floor((result.lossAttacker + result.lossDefender) * 0.15);
           if (gain > 0) { state.players[player].zeal += gain; pushLog(state, `${player}: 출혈 경제 — 광신 +${gain}`); }
