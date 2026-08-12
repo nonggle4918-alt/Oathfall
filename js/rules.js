@@ -6,10 +6,15 @@
 //  - AP는 라운드에 따라 자동 증가 + 지휘소 건물로 추가 보너스.
 //  - 부대별 이동력(moveRange/movePoints) 도입 — "한 턴에 전 맵을 먹는" 문제 해결.
 //  - 수도 티어(1~4) 시스템 — 상위 카드는 티어를 달성해야 덱에 섞여 들어간다 (죽은 패 방지).
-//  - 감염체: 수도도 감염 가능(방어군 주둔 시 진행 정지), 완료된 노드는 영구 "포자 지대"가 되어
-//    감염체 부대를 강화한다(저그 크립과 유사) + 낮은 확률로 자연 확산.
+//  - 감염체: 노드/수도를 감염시켜도 "탈취"는 중립 노드에만 적용된다. 이미 적이 소유한
+//    노드(수도 포함)를 감염시키면 소유권은 그대로 두고 생산/방어를 깎는 "디버프"로 완료된다
+//    (방어군 주둔 시 진행 정지는 동일). 완료 지점은 영구 "포자 지대"가 되어 감염체 부대를
+//    강화한다(저그 크립과 유사) + 낮은 확률로 자연 확산.
 //  - 종족별 패시브 특성(카드 없이 항상 적용): 왕국-영지 물류, 광신도-출혈 경제,
 //    차원 괴물-차원문 서지(후반 캐리), 감염체-자연 확산.
+//  - AP: 라운드 자동 증가는 공용 상한 4까지. 그 위로는 종족별 진행축에 따라 각기 다르게
+//    더 늘어난다 — 차원 괴물/감염체는 자신의 티어 스탯(차원문/감염력)이 4·5를 찍을 때마다
+//    +1씩(최대 +2), 왕국/광신도는 수도 티어 4에서 +1.
 
 import { NODES, ADJACENCY, DUMP_NODE_IDS, NEUTRAL_CAMP_GARRISON, NEUTRAL_CAMP_REWARD, STARTING_ARMY_POWER } from './mapData.js';
 import { CARD_DEFS, BUILDING_INCOME, AP_BONUS_BUILDINGS, AP_BONUS_CAP, RACE_SECONDARY, buildDeck, resolveCost } from './cards.js';
@@ -20,12 +25,15 @@ export const HAND_LIMIT = 7;
 export const START_HAND = 5;
 export const DRAW_PER_TURN = 2;
 export const BASE_AP_MIN = 2;
-export const BASE_AP_MAX = 6;
+export const BASE_AP_MAX = 4; // 라운드에 따른 "공용" 자동 증가는 여기서 멈춘다
 export const AP_GROWTH_EVERY_ROUNDS = 5; // N라운드마다 기본 AP +1
 export const ROUND_CAP = 20;
 export const DOMINATION_ROUNDS_NEEDED = 3;
 export const CAPITAL_TIER_MAX = 4;
 export const AUTO_SPREAD_CHANCE = 0.4;
+export const DEBUFF_DURATION = 5; // 적 노드 감염 완료 시 적용되는 디버프 지속 라운드
+export const DEBUFF_INCOME_MULT = 0.5;
+export const DEBUFF_DEFENSE_MULT = 0.85;
 
 function clone(x) {
   return typeof structuredClone === 'function' ? structuredClone(x) : JSON.parse(JSON.stringify(x));
@@ -46,6 +54,7 @@ export function initGame(seed, opts = {}) {
       infested: null,
       sporeZone: false,
       bonusIncome: null,
+      debuff: null,
     };
   }
 
@@ -123,11 +132,32 @@ function nodeIncome(node, pl) {
   const bi = node.building ? BUILDING_INCOME[node.building] : null;
   if (bi) for (const [k, v] of Object.entries(bi)) base[k] = (base[k] || 0) + v;
   if (node.bonusIncome) for (const [k, v] of Object.entries(node.bonusIncome)) base[k] = (base[k] || 0) + v;
+  // 감염 디버프가 걸린 노드는 소유주가 그대로여도 생산량이 깎인다 (탈취 대신 디버프).
+  if (node.debuff) for (const k of Object.keys(base)) base[k] = Math.floor(base[k] * DEBUFF_INCOME_MULT);
   return base;
 }
 
 function baseApForRound(round) {
   return Math.min(BASE_AP_MAX, BASE_AP_MIN + Math.floor((round - 1) / AP_GROWTH_EVERY_ROUNDS));
+}
+
+// 종족별 AP 상한 보너스. 공용 자동 증가(라운드 기준)는 4에서 멈추지만, 종족 고유
+// 진행축(차원문/감염력/수도 티어)이 오르면 종족마다 다른 방식으로 그 위까지 늘어난다.
+// 차원 괴물·감염체는 자기 티어 스탯이 4/5를 찍을 때마다 +1(최대 +2) — 후반 캐리형 종족이라
+// 가장 크게 늘어난다. 왕국·광신도는 별도 티어 스탯이 없어 수도 티어 4에서 +1만 받는다.
+function raceApBonus(pl) {
+  if (pl.race === 'rift') {
+    const lv = pl.gateLevel || 1;
+    return lv >= 5 ? 2 : lv >= 4 ? 1 : 0;
+  }
+  if (pl.race === 'infested') {
+    const lv = pl.virulence || 1;
+    return lv >= 5 ? 2 : lv >= 4 ? 1 : 0;
+  }
+  if (pl.race === 'kingdom' || pl.race === 'cultists') {
+    return (pl.capitalTier || 1) >= CAPITAL_TIER_MAX ? 1 : 0;
+  }
+  return 0;
 }
 
 function startTurn(state, player) {
@@ -146,7 +176,7 @@ function startTurn(state, player) {
   // 왕국 특성 — 영지 물류: 소유한 영지(territory) 하나당 물자 +1 (넓게 펴는 물량형 정체성 강화)
   if (pl.race === 'kingdom') inc.supply += ownedTerritoryCount;
   for (const k of Object.keys(inc)) pl[k] += inc[k];
-  pl.ap = baseApForRound(state.round) + Math.min(AP_BONUS_CAP, apBonus);
+  pl.ap = baseApForRound(state.round) + Math.min(AP_BONUS_CAP, apBonus) + raceApBonus(pl);
   state.activePlayer = player;
   // 이동력 리셋 + 강행군 보너스 만료 ("이번 턴"에만 유효)
   for (const node of Object.values(state.nodes)) {
@@ -230,8 +260,10 @@ function updateDumpDomination(state) {
 }
 
 // 감염체 §6.4: 감염 진행 노드는 라운드가 끝날 때마다 카운트다운된다.
-// M3: 방어군이 주둔해 있으면 진행이 "정지"된다(리셋은 아님) — 수도 감염도 가능해졌기 때문에
-// 방어자에게 "탈환하면 막을 수 있다"는 대응 수단을 준다.
+// M3: 방어군이 주둔해 있으면 진행이 "정지"된다(리셋은 아님).
+// M3 수정: "탈취"는 중립(무소유) 노드에만 적용된다. 이미 다른 플레이어가 소유한 노드(수도
+// 포함)를 감염시키면 완료 시 소유권은 그대로 두고 디버프(생산/방어 약화)를 건다 — 감염이
+// 곧 즉시 정복으로 이어지는 것을 막고, 방어자에게는 "탈환하면 막을 수 있다"는 대응 수단을 준다.
 function tickInfestation(state) {
   for (const [id, node] of Object.entries(state.nodes)) {
     if (!node.infested) continue;
@@ -243,12 +275,23 @@ function tickInfestation(state) {
     node.infested.roundsLeft -= 1;
     if (node.infested.roundsLeft <= 0) {
       const owner = node.infested.owner;
-      const wasCapital = node.type === 'capital';
-      node.owner = owner;
+      const wasEnemyOwned = node.infested.debuffTarget;
       node.infested = null;
-      pushLog(state, `${id} 노드가 감염 완료되어 ${owner} 소유가 되었다${wasCapital ? ' — 수도 함락!' : ''}`);
-      maybeAutoSpread(state, owner, id);
+      if (wasEnemyOwned) {
+        node.debuff = { owner, roundsLeft: DEBUFF_DURATION };
+        pushLog(state, `${id} 노드에 ${owner}의 감염이 완료되어 디버프가 걸렸다 (소유권 유지, 생산 -${Math.round((1 - DEBUFF_INCOME_MULT) * 100)}% / 방어 -${Math.round((1 - DEBUFF_DEFENSE_MULT) * 100)}%, ${DEBUFF_DURATION}라운드)`);
+      } else {
+        const wasCapital = node.type === 'capital';
+        node.owner = owner;
+        pushLog(state, `${id} 노드가 감염 완료되어 ${owner} 소유가 되었다${wasCapital ? ' — 수도 함락!' : ''}`);
+        maybeAutoSpread(state, owner, id);
+      }
     }
+  }
+  for (const node of Object.values(state.nodes)) {
+    if (!node.debuff) continue;
+    node.debuff.roundsLeft -= 1;
+    if (node.debuff.roundsLeft <= 0) node.debuff = null;
   }
   if (state.phase !== 'ended') checkConquest(state);
 }
@@ -271,7 +314,8 @@ function maybeAutoSpread(state, player, fromId) {
   const idx = Math.floor(seededRandom(state.seed, state.rngCounter++) * candidates.length);
   const pick = candidates[idx];
   const rounds = Math.max(1, 2 - Math.floor(((pl.virulence || 1) - 1) / 2));
-  state.nodes[pick].infested = { owner: player, roundsLeft: rounds };
+  const wasEnemyOwned = state.nodes[pick].owner !== null; // 자연 확산도 적 소유 노드면 탈취 대신 디버프로 완료된다
+  state.nodes[pick].infested = { owner: player, roundsLeft: rounds, debuffTarget: wasEnemyOwned };
   state.nodes[pick].sporeZone = true;
   pushLog(state, `${player}: 포자 지대의 여파로 ${pick}에 자연 감염 발생 (감염력 특성)`);
 }
@@ -281,9 +325,10 @@ function applyInfestedResidual(state, infestedPlayer, nodeId) {
   if (!node) return;
   if (node.owner === infestedPlayer && !node.infested) return;
   const virulence = state.players[infestedPlayer].virulence || 1;
+  const wasEnemyOwned = node.owner !== null; // 중립이 아니면(=다른 플레이어 소유) 완료 시 탈취 대신 디버프
   const base = node.type === 'capital' ? 4 : 2;
   const rounds = Math.max(1, base - Math.floor((virulence - 1) / 2));
-  node.infested = { owner: infestedPlayer, roundsLeft: rounds };
+  node.infested = { owner: infestedPlayer, roundsLeft: rounds, debuffTarget: wasEnemyOwned };
   node.sporeZone = true;
   state.players[infestedPlayer].spore += 2;
   pushLog(state, `${infestedPlayer}: 전투의 여파로 ${nodeId}에 포자가 남았다 (감염 시작, 포자 지대화)`);
@@ -403,15 +448,17 @@ export function reduce(state, action) {
         if (targetNode.army.power <= 0) { targetNode.army = null; pushLog(state, `${targetNodeId} 부대가 소멸했다`); }
       } else if (def.effect === 'infect') {
         const isCapital = targetNode.type === 'capital';
+        const wasEnemyOwned = targetNode.owner !== null; // 중립 노드만 완료 시 탈취, 적 소유 노드(수도 포함)는 디버프
         let rounds = isCapital ? (def.infectRoundsCapital || 4) : (def.infectRounds || 2);
         rounds = Math.max(1, rounds - Math.floor(((pl.virulence || 1) - 1) / 2));
         if (!isCapital) {
           const nearSpore = (ADJACENCY[targetNodeId] || []).some((nb) => state.nodes[nb].sporeZone && state.nodes[nb].owner === player);
           if (nearSpore) rounds = Math.max(1, rounds - 1);
         }
-        targetNode.infested = { owner: player, roundsLeft: rounds };
+        targetNode.infested = { owner: player, roundsLeft: rounds, debuffTarget: wasEnemyOwned };
         targetNode.sporeZone = true;
-        pushLog(state, `${player}: ${def.name} — ${targetNodeId} 감염 시작 (${rounds}라운드 후 완료${isCapital ? ', 수도 함락 위협!' : ''})`);
+        const outcomeNote = wasEnemyOwned ? '완료 시 소유권은 유지되고 디버프가 걸림' : '완료 시 무소유지가 되어 있으므로 탈취됨';
+        pushLog(state, `${player}: ${def.name} — ${targetNodeId} 감염 시작 (${rounds}라운드 후 완료, ${outcomeNote})`);
       } else if (def.effect === 'plagueAccelerate') {
         let count = 0;
         for (const node of Object.values(state.nodes)) {
@@ -500,7 +547,7 @@ export function reduce(state, action) {
         const defenderPlayer = toNode.army ? toNode.army.owner : null;
         const defenderRace = defenderPlayer ? state.players[defenderPlayer].race : null;
         const defenderRawPower = toNode.army ? toNode.army.power : toNode.garrison;
-        const terrainMult = toNode.type === 'capital' ? 1.5 : toNode.building === 'fortress' ? 1.25 : 1.0;
+        const terrainMult = (toNode.type === 'capital' ? 1.5 : toNode.building === 'fortress' ? 1.25 : 1.0) * (toNode.debuff ? DEBUFF_DEFENSE_MULT : 1.0);
         const heroVsCamp = movingArmy.hero && isGarrisonedCamp;
         const defenderSporeZone = defenderRace === 'infested' && !!toNode.sporeZone;
         const result = resolveCombat(state, player, movingArmy.power, defenderPlayer, defenderRawPower, {

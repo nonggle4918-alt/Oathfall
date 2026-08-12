@@ -87,8 +87,19 @@ export function renderMap(svg, state, ui, handlers) {
       }, true);
       g.appendChild(ring);
       const it = el('text', { x: node.x, y: node.y + radius + 30, 'text-anchor': 'middle', fill: infColor, 'font-size': 11, 'font-weight': 'bold' }, true);
-      it.textContent = `감염 ${node.infested.roundsLeft}R (${node.infested.owner})`;
+      it.textContent = `${node.infested.debuffTarget ? '감염(디버프 예정)' : '감염(탈취 예정)'} ${node.infested.roundsLeft}R (${node.infested.owner})`;
       g.appendChild(it);
+    }
+
+    if (node.debuff) {
+      const dbColor = OWNER_COLOR[node.debuff.owner];
+      const ring = el('circle', {
+        cx: node.x, cy: node.y, r: radius + 6, fill: 'none', stroke: '#a3e635', 'stroke-width': 2, 'stroke-dasharray': '1 4',
+      }, true);
+      g.appendChild(ring);
+      const dt = el('text', { x: node.x, y: node.y + radius + 30, 'text-anchor': 'middle', fill: dbColor, 'font-size': 11, 'font-weight': 'bold' }, true);
+      dt.textContent = `역병 디버프 ${node.debuff.roundsLeft}R (생산/방어 약화, ${node.debuff.owner} 소행)`;
+      g.appendChild(dt);
     }
 
     g.addEventListener('click', () => handlers.onNodeClick(id));

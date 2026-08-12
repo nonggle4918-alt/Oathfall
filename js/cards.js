@@ -248,8 +248,8 @@ export const CARD_DEFS = {
   },
   inf_spread: {
     name: '포자 살포', type: 'special', apCost: 1, cost: { spore: 2 },
-    needsTarget: true, targetFilter: 'infectable', effect: 'infect', infectRounds: 2,
-    desc: '아군 노드/포자 지대에 인접한 비아군 노드(수도 포함)를 감염시킨다. 이미 포자 지대에 인접하면 더 빨리 완료된다. 완료 후 그 노드는 영구히 포자 지대가 되어 감염체 부대를 강화한다.',
+    needsTarget: true, targetFilter: 'infectable', effect: 'infect', infectRounds: 2, infectRoundsCapital: 4,
+    desc: '아군 노드에 인접한 비아군 노드를 감염시킨다. 무소유 노드는 완료 시 탈취되지만, 적이 소유한 노드(수도 포함)는 소유권은 그대로 두고 생산·방어를 깎는 디버프가 걸린다. 완료된 자리는 영구히 포자 지대가 되어 감염체 부대를 강화한다.',
   },
   inf_plagueWave: {
     name: '역병의 파도', type: 'tactical', apCost: 1, cost: { spore: 3 },
