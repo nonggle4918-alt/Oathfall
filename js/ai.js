@@ -8,7 +8,7 @@
 // 전투가 끼는 순간부터는 결과가 불확실하므로 그 즉시 체인을 멈춘다.
 
 import { CARD_DEFS, resolveCost } from './cards.js';
-import { ADJACENCY, DUMP_NODE_IDS } from './mapData.js';
+import { DUMP_NODE_IDS } from './mapData.js';
 
 function affordable(sim, def) {
   if (sim.ap < def.apCost) return false;
@@ -155,7 +155,7 @@ function planArmyChain(state, aiPlayer, enemy, startId, moveRange) {
 
   for (let hop = 0; hop < moveRange; hop++) {
     const power = local[currentId].armyPower;
-    const neighbors = ADJACENCY[currentId] || [];
+    const neighbors = state.adjacency[currentId] || [];
     let bestTarget = null, bestScore = -Infinity, bestIsCombat = false;
     for (const nb of neighbors) {
       touch(nb);
@@ -185,7 +185,7 @@ function planArmyChain(state, aiPlayer, enemy, startId, moveRange) {
 function findFrontierNode(state, aiPlayer) {
   const myNodes = Object.keys(state.nodes).filter((id) => state.nodes[id].owner === aiPlayer);
   for (const id of myNodes) {
-    if ((ADJACENCY[id] || []).some((nb) => DUMP_NODE_IDS.includes(nb))) return id;
+    if ((state.adjacency[id] || []).some((nb) => DUMP_NODE_IDS.includes(nb))) return id;
   }
   return myNodes[0] || null;
 }
@@ -193,7 +193,7 @@ function findFrontierNode(state, aiPlayer) {
 function findInfectableNode(state, aiPlayer) {
   const myNodes = Object.keys(state.nodes).filter((id) => state.nodes[id].owner === aiPlayer);
   for (const id of myNodes) {
-    for (const nb of ADJACENCY[id] || []) {
+    for (const nb of state.adjacency[id] || []) {
       const n = state.nodes[nb];
       if (n.type === 'capital') continue;
       if (n.owner === aiPlayer) continue;
@@ -207,7 +207,7 @@ function findInfectableNode(state, aiPlayer) {
 function findWeakenTarget(state, aiPlayer) {
   const myNodes = Object.keys(state.nodes).filter((id) => state.nodes[id].owner === aiPlayer);
   for (const id of myNodes) {
-    for (const nb of ADJACENCY[id] || []) {
+    for (const nb of state.adjacency[id] || []) {
       const n = state.nodes[nb];
       if (n.army && n.army.owner !== aiPlayer) return nb;
     }

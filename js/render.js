@@ -1,4 +1,4 @@
-import { ADJACENCY, DUMP_NODE_IDS, NODE_NAMES, MAP_VIEWBOX } from './mapData.js';
+import { DUMP_NODE_IDS, MAP_VIEWBOX } from './mapData.js';
 import { NODE_TYPES } from './mapData.js';
 import { CARD_DEFS, RACE_INFO, RACE_SECONDARY, RACE_SPECIAL_ABILITY, resolveCost } from './cards.js';
 
@@ -62,7 +62,7 @@ export function renderMap(svg, state, ui, handlers) {
       x: node.x, y: node.y + radius + 16, 'text-anchor': 'middle',
       fill: '#94a3b8', 'font-size': 11,
     }, true);
-    label.textContent = `${NODE_NAMES[id] || NODE_TYPES[node.type].label}${node.building ? ' [' + CARD_DEFS[node.building].name + ']' : ''}`;
+    label.textContent = `${(state.nodeNames && state.nodeNames[id]) || NODE_TYPES[node.type].label}${node.building ? ' [' + CARD_DEFS[node.building].name + ']' : ''}`;
     g.appendChild(label);
 
     if (node.type === 'neutralCamp' && node.garrison > 0) {
@@ -110,7 +110,7 @@ export function renderMap(svg, state, ui, handlers) {
 function ADJACENCY_EDGES(state) {
   const seen = new Set();
   const edges = [];
-  for (const [a, list] of Object.entries(ADJACENCY)) {
+  for (const [a, list] of Object.entries(state.adjacency)) {
     for (const b of list) {
       const key = [a, b].sort().join('-');
       if (seen.has(key)) continue;

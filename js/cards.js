@@ -57,17 +57,28 @@ export const RACE_SPECIAL_ABILITY = {
   },
 };
 
-// 매 라운드 자동 생산 (일반 자원)
+// 매 라운드 자동 생산 (일반 자원). 값은 고정 오브젝트이거나 (node, pl) => 오브젝트 형태의
+// 함수일 수 있다 — 종족마다 "건물 효율"이 다르게 작동하는 걸 표현하기 위함이다:
+//  - 왕국: 평평한 고정치 + 수도 티어가 오르면 행정 효율 보너스 (관청). 넓고 안정적인 경제.
+//  - 광신도: 다른 종족의 동급 건물보다 산출 자체가 높다(고위험 고수익 — 경제가 얇으니 병력을
+//    아껴 지켜야 한다).
+//  - 차원 괴물: 차원문 레벨에 비례해 건물 자체가 스스로 강해진다 — 슬롯이 1개뿐이지만
+//    후반에는 그 한 자리가 다른 종족의 건물보다 훨씬 세진다.
+//  - 감염체: 기본 산출은 낮지만 포자 지대(sporeZone) 위에 지으면 보너스를 받는다 — 먼저
+//    감염시켜 놓은 자리에 건물을 얹는 확산형 경제.
 export const BUILDING_INCOME = {
   granary: { supply: 2 },
   library: { research: 1 },
-  chancellery: { authority: 2 },
+  chancellery: (node, pl) => ({ authority: 2 + ((pl.capitalTier || 1) >= 3 ? 1 : 0) }),
   fortress: {},
   command_post: {},
-  cult_zealShrine: { zeal: 2 },
-  cult_corruptionAltar: { corruption: 1 },
-  rift_watchtower: { rift: 1 },
-  inf_sporePool: { spore: 2 },
+  cult_zealShrine: { zeal: 3 },
+  cult_corruptionAltar: { corruption: 2 },
+  cult_bloodFarm: { supply: 3 },
+  rift_watchtower: (node, pl) => ({ rift: 1 + Math.floor((pl.gateLevel || 1) / 2) }),
+  rift_fissure: (node, pl) => ({ supply: 1 + Math.floor((pl.gateLevel || 1) / 2) }),
+  inf_sporePool: (node) => ({ spore: 2 + (node.sporeZone ? 1 : 0) }),
+  inf_mycelialNutrient: (node) => ({ supply: 2 + (node.sporeZone ? 1 : 0) }),
 };
 
 // AP는 nodeIncome 루프가 아니라 라운드 시작 시 별도 계산된다 (rules.js startTurn 참조).
@@ -187,11 +198,15 @@ export const CARD_DEFS = {
   },
   cult_zealShrine: {
     name: '유혈 사원', type: 'building', apCost: 1, cost: { supply: 3 },
-    needsTarget: true, targetFilter: 'ownedNoBuilding', desc: '대상 노드에 부착. 매 라운드 광신 +2 생산.',
+    needsTarget: true, targetFilter: 'ownedNoBuilding', desc: '대상 노드에 부착. 매 라운드 광신 +3 생산 (다른 종족의 동급 건물보다 산출이 높다 — 고위험 고수익).',
   },
   cult_corruptionAltar: {
     name: '타락의 제단', type: 'building', apCost: 1, cost: { supply: 3 },
-    needsTarget: true, targetFilter: 'ownedNoBuilding', desc: '대상 노드에 부착. 매 라운드 타락 +1 생산.',
+    needsTarget: true, targetFilter: 'ownedNoBuilding', desc: '대상 노드에 부착. 매 라운드 타락 +2 생산.',
+  },
+  cult_bloodFarm: {
+    name: '피의 농장', type: 'building', apCost: 1, cost: { supply: 2 },
+    needsTarget: true, targetFilter: 'ownedNoBuilding', desc: '대상 노드에 부착. 매 라운드 물자 +3 생산 (왕국 곡창보다 산출이 높다 — 광신도 경제는 고위험 고수익).',
   },
   cult_bloodOath: {
     name: '피의 서약', type: 'special', apCost: 2, cost: { zeal: 3 },
@@ -214,7 +229,13 @@ export const CARD_DEFS = {
   // ---- 차원 괴물 (Rift Horrors) — 균열력/차원문 티어, 후반 캐리형 ----
   rift_watchtower: {
     name: '균열 감시탑', type: 'building', apCost: 1, cost: { supply: 2 },
-    needsTarget: true, targetFilter: 'ownedNoBuilding', desc: '대상 노드에 부착. 매 라운드 균열력 +1 생산.',
+    needsTarget: true, targetFilter: 'ownedNoBuilding',
+    desc: '대상 노드에 부착. 매 라운드 균열력 1 + (차원문 레벨÷2, 내림) 생산 — 차원문이 오를수록 이 건물 자체가 스스로 강해진다.',
+  },
+  rift_fissure: {
+    name: '차원 균열지대', type: 'building', apCost: 1, cost: { supply: 3, rift: 1 },
+    needsTarget: true, targetFilter: 'ownedNoBuilding',
+    desc: '대상 노드에 부착. 매 라운드 물자 1 + (차원문 레벨÷2, 내림) 생산 — 감시탑과 같은 방식으로 후반에 스스로 강해지는 경제 건물.',
   },
   rift_gateExpand: {
     name: '차원문 확장', type: 'special', apCost: 1, cost: { rift: 3 },
@@ -269,7 +290,13 @@ export const CARD_DEFS = {
   },
   inf_sporePool: {
     name: '포자 웅덩이', type: 'building', apCost: 1, cost: { supply: 2 },
-    needsTarget: true, targetFilter: 'ownedNoBuilding', desc: '대상 노드에 부착. 매 라운드 포자 +2 생산.',
+    needsTarget: true, targetFilter: 'ownedNoBuilding',
+    desc: '대상 노드에 부착. 매 라운드 포자 +2 생산 (포자 지대 위라면 +1 추가) — 낮지만 여러 곳에 넓게 짓는 확산형 경제.',
+  },
+  inf_mycelialNutrient: {
+    name: '균사 영양소', type: 'building', apCost: 1, cost: { supply: 2 },
+    needsTarget: true, targetFilter: 'ownedNoBuilding',
+    desc: '대상 노드에 부착. 매 라운드 물자 +2 생산 (포자 지대 위라면 +1 추가) — 포자 웅덩이와 같은 방식의 확산형 경제 건물.',
   },
   inf_spread: {
     name: '포자 살포', type: 'special', apCost: 1, cost: { spore: 2 },
@@ -313,18 +340,18 @@ export const DECKS = {
   cultists: [
     ['fortress', 2], ['resupply', 2], ['scouting', 2], ['forcedMarch', 2], ['command_post', 2],
     ['cult_levy', 4], ['cult_zealotRush', 2], ['cult_sacrifice', 4],
-    ['cult_grandAltar', 2], ['cult_zealShrine', 2], ['cult_corruptionAltar', 2], ['cult_bloodOath', 2],
+    ['cult_grandAltar', 2], ['cult_zealShrine', 2], ['cult_corruptionAltar', 2], ['cult_bloodFarm', 2], ['cult_bloodOath', 2],
     ['cult_capitalExpand', 3], ['cult_demonPact', 1],
   ],
   rift: [
     ['fortress', 2], ['resupply', 2], ['scouting', 2], ['forcedMarch', 2], ['command_post', 2],
-    ['rift_watchtower', 3], ['rift_gateExpand', 4], ['rift_fracture', 2],
+    ['rift_watchtower', 2], ['rift_fissure', 2], ['rift_gateExpand', 4], ['rift_fracture', 2],
     ['rift_summonLow', 4], ['rift_voidStalker', 2], ['rift_summonHigh', 2],
     ['rift_capitalExpand', 3], ['rift_summonApex', 1],
   ],
   infested: [
     ['fortress', 2], ['resupply', 2], ['scouting', 2], ['forcedMarch', 2], ['command_post', 2],
-    ['inf_levy', 4], ['inf_sporeGlider', 2], ['inf_sporePool', 3],
+    ['inf_levy', 4], ['inf_sporeGlider', 2], ['inf_sporePool', 2], ['inf_mycelialNutrient', 2],
     ['inf_spread', 4], ['inf_plagueWave', 2], ['inf_virulenceUp', 3],
     ['inf_capitalExpand', 3], ['inf_hiveQueen', 1],
   ],

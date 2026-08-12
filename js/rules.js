@@ -19,7 +19,7 @@
 //    더 늘어난다 — 차원 괴물/감염체는 자신의 티어 스탯(차원문/감염력)이 4·5를 찍을 때마다
 //    +1씩(최대 +2), 왕국/광신도는 수도 티어 4에서 +1.
 
-import { NODES, ADJACENCY, DUMP_NODE_IDS, NEUTRAL_CAMP_GARRISON, NEUTRAL_CAMP_REWARD, STARTING_ARMY_POWER } from './mapData.js';
+import { buildGameMap, DUMP_NODE_IDS, NEUTRAL_CAMP_GARRISON, NEUTRAL_CAMP_REWARD, STARTING_ARMY_POWER } from './mapData.js';
 import { CARD_DEFS, BUILDING_INCOME, AP_BONUS_BUILDINGS, AP_BONUS_CAP, RACE_SECONDARY, buildDeck, resolveCost } from './cards.js';
 import { seededRandom, seededVariance } from './rng.js';
 
@@ -44,8 +44,11 @@ function clone(x) {
 
 export function initGame(seed, opts = {}) {
   const races = opts.races || { P1: 'kingdom', P2: 'kingdom' };
+  // 종족마다 수도 뒤 인컴 슬롯 개수가 다르므로(RACE_ECON_SLOTS), 맵 자체를 종족 선택에 맞춰
+  // 매 게임 새로 생성한다 — 더 이상 고정된 모듈 레벨 맵이 아니다.
+  const { nodes: mapNodes, nodeNames, adjacency } = buildGameMap(races);
   const nodes = {};
-  for (const [id, def] of Object.entries(NODES)) {
+  for (const [id, def] of Object.entries(mapNodes)) {
     nodes[id] = {
       type: def.type, x: def.x, y: def.y,
       owner: def.owner,
@@ -81,7 +84,7 @@ export function initGame(seed, opts = {}) {
     seed, rngCounter: 0,
     round: 1, activePlayer: 'P1', phase: 'playing', winner: null, winReason: null,
     dumpDomination: { owner: null, consecutiveRounds: 0 },
-    players, nodes,
+    players, nodes, adjacency, nodeNames,
     log: [],
   };
 
@@ -132,7 +135,11 @@ function nodeIncome(node, pl) {
     if (secondary) base[secondary] += 1;
     else base[primary] += 1;
   }
-  const bi = node.building ? BUILDING_INCOME[node.building] : null;
+  // 건물 산출은 고정 오브젝트이거나 (node, pl) => 오브젝트 함수다 — 후자는 종족별로 건물
+  // 효율이 다르게 스케일링되는 경우다(예: 차원 괴물은 차원문 레벨에 비례, 감염체는
+  // 포자 지대 위에서 보너스). cards.js의 BUILDING_INCOME 주석 참조.
+  const biRaw = node.building ? BUILDING_INCOME[node.building] : null;
+  const bi = typeof biRaw === 'function' ? biRaw(node, pl) : biRaw;
   if (bi) for (const [k, v] of Object.entries(bi)) base[k] = (base[k] || 0) + v;
   if (node.bonusIncome) for (const [k, v] of Object.entries(node.bonusIncome)) base[k] = (base[k] || 0) + v;
   // 감염 디버프가 걸린 노드는 소유주가 그대로여도 생산량이 깎인다 (탈취 대신 디버프).
@@ -306,7 +313,7 @@ function maybeAutoSpread(state, player, fromId) {
   if (pl.race !== 'infested') return;
   const roll = seededRandom(state.seed, state.rngCounter++);
   if (roll > AUTO_SPREAD_CHANCE) return;
-  const candidates = (ADJACENCY[fromId] || []).filter((nb) => {
+  const candidates = (state.adjacency[fromId] || []).filter((nb) => {
     const n = state.nodes[nb];
     if (n.type === 'capital') return false;
     if (n.owner === player) return false;
@@ -381,12 +388,12 @@ function targetValid(state, player, nodeId, filter) {
   if (filter === 'ownedWithArmy') return node.owner === player && node.army && node.army.owner === player;
   if (filter === 'enemyArmyAdjacent') {
     if (!node.army || node.army.owner === player) return false;
-    return (ADJACENCY[nodeId] || []).some((nb) => state.nodes[nb].owner === player);
+    return (state.adjacency[nodeId] || []).some((nb) => state.nodes[nb].owner === player);
   }
   if (filter === 'infectable') {
     if (node.owner === player) return false;
     if (node.infested && node.infested.owner === player) return false;
-    return (ADJACENCY[nodeId] || []).some((nb) => state.nodes[nb].owner === player);
+    return (state.adjacency[nodeId] || []).some((nb) => state.nodes[nb].owner === player);
   }
   return true;
 }
@@ -455,7 +462,7 @@ export function reduce(state, action) {
         let rounds = isCapital ? (def.infectRoundsCapital || 4) : (def.infectRounds || 2);
         rounds = Math.max(1, rounds - Math.floor(((pl.virulence || 1) - 1) / 2));
         if (!isCapital) {
-          const nearSpore = (ADJACENCY[targetNodeId] || []).some((nb) => state.nodes[nb].sporeZone && state.nodes[nb].owner === player);
+          const nearSpore = (state.adjacency[targetNodeId] || []).some((nb) => state.nodes[nb].sporeZone && state.nodes[nb].owner === player);
           if (nearSpore) rounds = Math.max(1, rounds - 1);
         }
         targetNode.infested = { owner: player, roundsLeft: rounds, debuffTarget: wasEnemyOwned };
@@ -515,7 +522,7 @@ export function reduce(state, action) {
     case 'ISSUE_MARCH': {
       const { player, fromNodeId, toNodeId } = action;
       if (state.activePlayer !== player) return state;
-      if (!ADJACENCY[fromNodeId] || !ADJACENCY[fromNodeId].includes(toNodeId)) return state;
+      if (!state.adjacency[fromNodeId] || !state.adjacency[fromNodeId].includes(toNodeId)) return state;
       const fromNode = state.nodes[fromNodeId];
       const toNode = state.nodes[toNodeId];
       if (!fromNode.army || fromNode.army.owner !== player) return state;
@@ -631,4 +638,4 @@ export function reduce(state, action) {
   }
 }
 
-export { ADJACENCY, DUMP_NODE_IDS, targetValid };
+export { DUMP_NODE_IDS, targetValid };

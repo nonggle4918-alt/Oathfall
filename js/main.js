@@ -2,7 +2,6 @@ import { initGame, reduce, targetValid, ROUND_CAP } from './rules.js';
 import { getAiActions } from './ai.js';
 import { CARD_DEFS } from './cards.js';
 import { renderMap, renderResourceBar, renderHand, renderLog, renderOrderPanel, renderVictory, renderSetup } from './render.js';
-import { ADJACENCY } from './mapData.js';
 
 const els = {
   map: document.getElementById('map'),
@@ -109,7 +108,7 @@ const setupHandlers = {
 };
 
 function ruleAdjacent(a, b) {
-  return !!(ADJACENCY[a] && ADJACENCY[a].includes(b));
+  return !!(state.adjacency[a] && state.adjacency[a].includes(b));
 }
 
 function startGame() {
