@@ -1,11 +1,11 @@
-import { ADJACENCY, DUMP_NODE_IDS } from './mapData.js';
+import { ADJACENCY, DUMP_NODE_IDS, NODE_NAMES, MAP_VIEWBOX } from './mapData.js';
 import { NODE_TYPES } from './mapData.js';
-import { CARD_DEFS, RACE_INFO } from './cards.js';
+import { CARD_DEFS, RACE_INFO, RACE_SECONDARY, resolveCost } from './cards.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const OWNER_COLOR = { P1: '#3b82f6', P2: '#ef4444', neutral: '#475569' };
 const TYPE_ICON = { capital: '★', territory: '●', sanctuary: '◆', dump: '◈', neutralCamp: '▲' };
-const RES_LABEL = { supply: '물자', influence: '영향력', research: '연구', zeal: '광신', rift: '균열력', spore: '포자' };
+const RES_LABEL = { supply: '물자', research: '연구', zeal: '광신', rift: '균열력', spore: '포자', authority: '권위', corruption: '타락' };
 
 function el(tag, attrs = {}, ns = false) {
   const e = ns ? document.createElementNS(SVG_NS, tag) : document.createElement(tag);
@@ -15,9 +15,8 @@ function el(tag, attrs = {}, ns = false) {
 
 export function renderMap(svg, state, ui, handlers) {
   svg.innerHTML = '';
-  svg.setAttribute('viewBox', '0 0 960 480');
+  svg.setAttribute('viewBox', `0 0 ${MAP_VIEWBOX.width} ${MAP_VIEWBOX.height}`);
 
-  // 매립지 지배 영역 강조
   for (const [a, b] of ADJACENCY_EDGES(state)) {
     const line = el('line', {
       x1: state.nodes[a].x, y1: state.nodes[a].y,
@@ -36,6 +35,13 @@ export function renderMap(svg, state, ui, handlers) {
     const selectable = handlers.isSelectableNode(id);
     const selected = ui.selectedNodeId === id;
     const targetable = ui.targetableNodeIds && ui.targetableNodeIds.includes(id);
+
+    if (node.sporeZone) {
+      const zoneRing = el('circle', {
+        cx: node.x, cy: node.y, r: radius + 10, fill: 'rgba(132,204,22,0.08)', stroke: '#4d7c0f', 'stroke-width': 1.5,
+      }, true);
+      g.appendChild(zoneRing);
+    }
 
     const circle = el('circle', {
       cx: node.x, cy: node.y, r: radius,
@@ -56,7 +62,7 @@ export function renderMap(svg, state, ui, handlers) {
       x: node.x, y: node.y + radius + 16, 'text-anchor': 'middle',
       fill: '#94a3b8', 'font-size': 11,
     }, true);
-    label.textContent = `${NODE_TYPES[node.type].label}${node.building ? ' [' + CARD_DEFS[node.building].name + ']' : ''}`;
+    label.textContent = `${NODE_NAMES[id] || NODE_TYPES[node.type].label}${node.building ? ' [' + CARD_DEFS[node.building].name + ']' : ''}`;
     g.appendChild(label);
 
     if (node.type === 'neutralCamp' && node.garrison > 0) {
@@ -67,8 +73,10 @@ export function renderMap(svg, state, ui, handlers) {
 
     if (node.army) {
       const armyColor = OWNER_COLOR[node.army.owner];
+      const mp = node.army.movePoints ?? 0;
+      const range = node.army.moveRange || 1;
       const at = el('text', { x: node.x, y: node.y - radius - 8, 'text-anchor': 'middle', fill: armyColor, 'font-size': 13, 'font-weight': 'bold' }, true);
-      at.textContent = `${node.army.hero ? '⚔' : ''}${node.army.power} (${node.army.stance === 'defend' ? '방어' : '후퇴'})`;
+      at.textContent = `${node.army.hero ? '⚔' : ''}${node.army.power} (${node.army.stance === 'defend' ? '방어' : '후퇴'}) 이동${mp}/${range}`;
       g.appendChild(at);
     }
 
@@ -107,17 +115,16 @@ export function renderResourceBar(container, state) {
   for (const p of ['P1', 'P2']) {
     const pl = state.players[p];
     const raceInfo = RACE_INFO[pl.race];
+    const sec = RACE_SECONDARY[pl.race];
     const box = el('div', { class: `res-box res-${p}` });
-    const uniqueLine = pl.race === 'kingdom'
-      ? `연구 ${pl.research} · 특화: ${pl.specialization ? specName(pl.specialization) : '없음'}`
-      : pl.race === 'rift'
-        ? `균열력 ${pl.rift} · 차원문 Lv${pl.gateLevel}`
-        : `${raceInfo.resourceName} ${pl[raceInfo.resource]}`;
+    const secLine = sec.isCurrency
+      ? `${sec.name} ${pl[sec.key]}`
+      : sec.key === 'gateLevel' ? `차원문 Lv${pl.gateLevel}` : `감염력 Lv${pl.virulence}`;
     box.innerHTML = `
       <div class="res-title">${p}${p === state.activePlayer ? ' ▶' : ''} ${raceInfo.name} ${pl.isAI ? '(AI)' : '(플레이어)'}</div>
-      <div class="res-line">물자 ${pl.supply} · 영향력 ${pl.influence}</div>
-      <div class="res-line">${uniqueLine}</div>
-      <div class="res-line">AP ${pl.ap}/3</div>
+      <div class="res-line">물자 ${pl.supply} · 수도 티어 ${pl.capitalTier}/4</div>
+      <div class="res-line">${raceInfo.resourceName} ${pl[raceInfo.resource]} · ${secLine}</div>
+      <div class="res-line">AP ${pl.ap}${pl.specialization ? ' · 특화: ' + specName(pl.specialization) : ''}</div>
     `;
     container.appendChild(box);
   }
@@ -136,15 +143,19 @@ export function renderHand(container, state, ui, handlers) {
   }
   for (const card of pl.hand) {
     const def = CARD_DEFS[card.kind];
+    const cost = resolveCost(def, pl);
     const affordable = pl.ap >= def.apCost
-      && Object.entries(def.cost).every(([k, v]) => (pl[k] || 0) >= v)
+      && Object.entries(cost).every(([k, v]) => (pl[k] || 0) >= v)
       && !(def.once && pl.specialization)
-      && !(def.minGateLevel && (pl.gateLevel || 1) < def.minGateLevel);
+      && !(def.minGateLevel && (pl.gateLevel || 1) < def.minGateLevel)
+      && !(def.minCapitalTier && (pl.capitalTier || 1) < def.minCapitalTier);
     const cardEl = el('div', { class: `card card-${def.type} ${affordable ? '' : 'card-disabled'} ${ui.selectedCardUid === card.uid ? 'card-selected' : ''}` });
-    const costParts = Object.entries(def.cost).map(([k, v]) => `${RES_LABEL[k] || k}${v}`);
+    const costParts = Object.entries(cost).map(([k, v]) => `${RES_LABEL[k] || k}${v}`);
+    const gateNote = def.minGateLevel ? ` · 차원문Lv${def.minGateLevel}+` : '';
+    const tierNote = def.minCapitalTier ? ` · 수도T${def.minCapitalTier}+` : '';
     cardEl.innerHTML = `
       <div class="card-name">${def.name}</div>
-      <div class="card-cost">AP${def.apCost}${costParts.length ? ' · ' + costParts.join(' ') : ''}</div>
+      <div class="card-cost">AP${def.apCost}${costParts.length ? ' · ' + costParts.join(' ') : ''}${gateNote}${tierNote}</div>
       <div class="card-desc">${def.desc}</div>
     `;
     cardEl.addEventListener('click', () => handlers.onCardClick(card.uid));
@@ -165,16 +176,8 @@ export function renderOrderPanel(container, state, ui, handlers) {
   const node = state.nodes[ui.selectedNodeId];
   if (!node.army || node.army.owner !== state.activePlayer || state.players[state.activePlayer].isAI) return;
   const title = el('div', { class: 'order-title' });
-  title.textContent = `${ui.selectedNodeId} 부대 (전력 ${node.army.power}) 명령`;
+  title.textContent = `${ui.selectedNodeId} 부대 (전력 ${node.army.power}, 이동력 ${node.army.movePoints}/${node.army.moveRange || 1})`;
   container.appendChild(title);
-
-  const used = state.ordersUsedThisTurn.includes(ui.selectedNodeId);
-  if (used) {
-    const done = el('div', { class: 'hint' });
-    done.textContent = '이번 턴 이미 명령을 내렸습니다.';
-    container.appendChild(done);
-    return;
-  }
 
   const btnDefend = el('button', { class: 'btn' });
   btnDefend.textContent = '방어 (전력 +30%)';
@@ -186,9 +189,15 @@ export function renderOrderPanel(container, state, ui, handlers) {
   btnRetreat.addEventListener('click', () => handlers.onStance(ui.selectedNodeId, 'retreat'));
   container.appendChild(btnRetreat);
 
-  const marchHint = el('div', { class: 'hint' });
-  marchHint.textContent = '진군하려면 지도에서 인접한 노드를 클릭하세요.';
-  container.appendChild(marchHint);
+  if ((node.army.movePoints || 0) > 0) {
+    const marchHint = el('div', { class: 'hint' });
+    marchHint.textContent = `진군하려면 지도에서 인접한 노드를 클릭하세요. (남은 이동력 ${node.army.movePoints})`;
+    container.appendChild(marchHint);
+  } else {
+    const done = el('div', { class: 'hint' });
+    done.textContent = '이 부대는 이번 턴 이동력을 모두 사용했습니다.';
+    container.appendChild(done);
+  }
 }
 
 export function renderSetup(container, setup, handlers) {

@@ -1,4 +1,4 @@
-import { initGame, reduce, targetValid } from './rules.js';
+import { initGame, reduce, targetValid, ROUND_CAP } from './rules.js';
 import { getAiActions } from './ai.js';
 import { CARD_DEFS } from './cards.js';
 import { renderMap, renderResourceBar, renderHand, renderLog, renderOrderPanel, renderVictory, renderSetup } from './render.js';
@@ -16,6 +16,7 @@ const els = {
   roundInfo: document.getElementById('round-info'),
   newGameBtn: document.getElementById('new-game-btn'),
   gameLayout: document.getElementById('main-layout'),
+  handTray: document.getElementById('hand-tray'),
 };
 
 let state = null;
@@ -41,7 +42,7 @@ const handlers = {
   isSelectableNode(id) {
     const node = state.nodes[id];
     const active = state.players[state.activePlayer];
-    return !active.isAI && node.army && node.army.owner === state.activePlayer && !state.ordersUsedThisTurn.includes(id);
+    return !active.isAI && node.army && node.army.owner === state.activePlayer;
   },
   onNodeClick(id) {
     const active = state.players[state.activePlayer];
@@ -129,7 +130,7 @@ function backToSetup() {
 function render() {
   if (screen === 'setup') {
     els.gameLayout.classList.add('hidden');
-    els.endTurnBtn.classList.add('hidden');
+    els.handTray.classList.add('hidden');
     els.victory.classList.add('hidden');
     els.resourceBar.classList.add('hidden');
     els.roundInfo.textContent = '종족을 선택하세요';
@@ -139,10 +140,10 @@ function render() {
 
   els.setup.classList.add('hidden');
   els.gameLayout.classList.remove('hidden');
-  els.endTurnBtn.classList.remove('hidden');
+  els.handTray.classList.remove('hidden');
   els.resourceBar.classList.remove('hidden');
 
-  els.roundInfo.textContent = `라운드 ${state.round} / 12 — ${state.activePlayer} 턴`;
+  els.roundInfo.textContent = `라운드 ${state.round} / ${ROUND_CAP} — ${state.activePlayer} 턴`;
   renderMap(els.map, state, ui, handlers);
   renderResourceBar(els.resourceBar, state);
   renderHand(els.hand, state, ui, handlers);

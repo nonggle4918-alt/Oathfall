@@ -1,17 +1,31 @@
 // 순수 룰 엔진. reduce(state, action) -> state 외에는 아무것도 모른다 (§2 원칙 2).
 // 네트워크·렌더링·저장을 몰라야 Firebase 연동(2단계) 시 코어를 그대로 승격할 수 있다.
+//
+// M3 개편 요약 (커밋 로그 참고):
+//  - "영향력" 공용 자원 폐기 → 종족별 고유자원 2축(연구+권위 / 광신+타락 / 균열력+차원문티어 / 포자+감염력).
+//  - AP는 라운드에 따라 자동 증가 + 지휘소 건물로 추가 보너스.
+//  - 부대별 이동력(moveRange/movePoints) 도입 — "한 턴에 전 맵을 먹는" 문제 해결.
+//  - 수도 티어(1~4) 시스템 — 상위 카드는 티어를 달성해야 덱에 섞여 들어간다 (죽은 패 방지).
+//  - 감염체: 수도도 감염 가능(방어군 주둔 시 진행 정지), 완료된 노드는 영구 "포자 지대"가 되어
+//    감염체 부대를 강화한다(저그 크립과 유사) + 낮은 확률로 자연 확산.
+//  - 종족별 패시브 특성(카드 없이 항상 적용): 왕국-영지 물류, 광신도-출혈 경제,
+//    차원 괴물-차원문 서지(후반 캐리), 감염체-자연 확산.
 
 import { NODES, ADJACENCY, DUMP_NODE_IDS, NEUTRAL_CAMP_GARRISON, NEUTRAL_CAMP_REWARD, STARTING_ARMY_POWER } from './mapData.js';
-import { CARD_DEFS, BUILDING_INCOME, buildDeck } from './cards.js';
-import { seededVariance } from './rng.js';
+import { CARD_DEFS, BUILDING_INCOME, AP_BONUS_BUILDINGS, AP_BONUS_CAP, RACE_SECONDARY, buildDeck, resolveCost } from './cards.js';
+import { seededRandom, seededVariance } from './rng.js';
 
 export const PLAYER_ORDER = ['P1', 'P2'];
 export const HAND_LIMIT = 7;
 export const START_HAND = 5;
 export const DRAW_PER_TURN = 2;
-export const AP_PER_TURN = 3;
-export const ROUND_CAP = 12;
-export const DOMINATION_ROUNDS_NEEDED = 2;
+export const BASE_AP_MIN = 2;
+export const BASE_AP_MAX = 6;
+export const AP_GROWTH_EVERY_ROUNDS = 5; // N라운드마다 기본 AP +1
+export const ROUND_CAP = 20;
+export const DOMINATION_ROUNDS_NEEDED = 3;
+export const CAPITAL_TIER_MAX = 4;
+export const AUTO_SPREAD_CHANCE = 0.4;
 
 function clone(x) {
   return typeof structuredClone === 'function' ? structuredClone(x) : JSON.parse(JSON.stringify(x));
@@ -26,18 +40,26 @@ export function initGame(seed, opts = {}) {
       owner: def.owner,
       building: null,
       garrison: def.type === 'neutralCamp' ? NEUTRAL_CAMP_GARRISON : 0,
-      army: def.type === 'capital' ? { owner: def.owner, power: STARTING_ARMY_POWER, stance: 'defend', hero: false } : null,
+      army: def.type === 'capital'
+        ? { owner: def.owner, power: STARTING_ARMY_POWER, stance: 'defend', hero: false, moveRange: 1, movePoints: 1 }
+        : null,
       infested: null,
+      sporeZone: false,
+      bonusIncome: null,
     };
   }
 
   const players = {};
   for (const p of PLAYER_ORDER) {
+    const race = races[p] || 'kingdom';
+    const { deck, locked } = buildDeck(seed, p, race);
     players[p] = {
-      race: races[p] || 'kingdom',
-      supply: 5, influence: 2, research: 0, zeal: 0, rift: 0, spore: 0, ap: 0,
-      gateLevel: 1,
-      hand: [], deck: buildDeck(seed, p, races[p] || 'kingdom'), discard: [],
+      race,
+      supply: 5, ap: 0,
+      research: 0, zeal: 0, rift: 0, spore: 0, authority: 0, corruption: 0,
+      gateLevel: 1, virulence: 1,
+      capitalTier: 1,
+      hand: [], deck, discard: [], locked,
       specialization: null,
       isAI: opts.aiPlayers ? opts.aiPlayers.includes(p) : p === 'P2',
     };
@@ -46,7 +68,6 @@ export function initGame(seed, opts = {}) {
   let state = {
     seed, rngCounter: 0,
     round: 1, activePlayer: 'P1', phase: 'playing', winner: null, winReason: null,
-    ordersUsedThisTurn: [],
     dumpDomination: { owner: null, consecutiveRounds: 0 },
     players, nodes,
     log: [],
@@ -76,42 +97,71 @@ function drawCards(state, player, count) {
   return state;
 }
 
-function nodeIncome(node) {
-  const base = { supply: 0, influence: 0, research: 0, zeal: 0, rift: 0, spore: 0 };
-  if (node.type === 'capital') { base.supply += 3; base.influence += 1; }
+// 종족별 2차 통화 자원 (권위/타락). rift/infested는 통화가 아니라 티어 스탯이라 여기 없음.
+function secondaryCurrencyKey(race) {
+  const sec = RACE_SECONDARY[race];
+  return sec && sec.isCurrency ? sec.key : null;
+}
+function primaryKey(race) {
+  return { kingdom: 'research', cultists: 'zeal', rift: 'rift', infested: 'spore' }[race] || 'research';
+}
+
+function nodeIncome(node, pl) {
+  const base = { supply: 0, research: 0, zeal: 0, rift: 0, spore: 0, authority: 0, corruption: 0 };
+  const primary = primaryKey(pl.race);
+  const secondary = secondaryCurrencyKey(pl.race);
+  if (node.type === 'capital') { base.supply += 3; base[primary] += 1; }
   else if (node.type === 'territory') { base.supply += 2; }
-  else if (node.type === 'sanctuary') { base.influence += 2; }
-  else if (node.type === 'dump') { base.supply += 2; base.influence += 2; }
+  else if (node.type === 'sanctuary') {
+    if (secondary) base[secondary] += 2;
+    else base[primary] += 1; // rift/infested: 화폐 2축이 없으니 1차 자원으로 보전
+  } else if (node.type === 'dump') {
+    base.supply += 2;
+    if (secondary) base[secondary] += 1;
+    else base[primary] += 1;
+  }
   const bi = node.building ? BUILDING_INCOME[node.building] : null;
   if (bi) for (const [k, v] of Object.entries(bi)) base[k] = (base[k] || 0) + v;
+  if (node.bonusIncome) for (const [k, v] of Object.entries(node.bonusIncome)) base[k] = (base[k] || 0) + v;
   return base;
+}
+
+function baseApForRound(round) {
+  return Math.min(BASE_AP_MAX, BASE_AP_MIN + Math.floor((round - 1) / AP_GROWTH_EVERY_ROUNDS));
 }
 
 function startTurn(state, player) {
   const pl = state.players[player];
-  const inc = { supply: 0, influence: 0, research: 0, zeal: 0, rift: 0, spore: 0 };
+  const inc = { supply: 0, research: 0, zeal: 0, rift: 0, spore: 0, authority: 0, corruption: 0 };
+  let ownedTerritoryCount = 0;
+  let apBonus = 0;
   for (const node of Object.values(state.nodes)) {
-    if (node.owner === player) {
-      const i = nodeIncome(node);
-      for (const k of Object.keys(inc)) inc[k] += i[k] || 0;
+    if (node.owner !== player) continue;
+    const i = nodeIncome(node, pl);
+    for (const k of Object.keys(inc)) inc[k] += i[k] || 0;
+    if (node.type === 'territory') ownedTerritoryCount += 1;
+    if (node.building && AP_BONUS_BUILDINGS[node.building]) apBonus += AP_BONUS_BUILDINGS[node.building];
+  }
+  if (pl.specialization === 'faith') inc.authority += 2;
+  // 왕국 특성 — 영지 물류: 소유한 영지(territory) 하나당 물자 +1 (넓게 펴는 물량형 정체성 강화)
+  if (pl.race === 'kingdom') inc.supply += ownedTerritoryCount;
+  for (const k of Object.keys(inc)) pl[k] += inc[k];
+  pl.ap = baseApForRound(state.round) + Math.min(AP_BONUS_CAP, apBonus);
+  state.activePlayer = player;
+  // 이동력 리셋 + 강행군 보너스 만료 ("이번 턴"에만 유효)
+  for (const node of Object.values(state.nodes)) {
+    if (node.army && node.army.owner === player) {
+      node.army.movePoints = node.army.moveRange || 1;
+      node.army.forcedMarchBonus = false;
     }
   }
-  if (pl.specialization === 'faith') inc.influence += 2;
-  for (const k of Object.keys(inc)) pl[k] += inc[k];
-  pl.ap = AP_PER_TURN;
-  state.ordersUsedThisTurn = [];
-  state.activePlayer = player;
-  // 강행군 보너스는 "이번 턴"에만 유효 — 다음 자기 턴 시작 시 만료시킨다
-  for (const node of Object.values(state.nodes)) {
-    if (node.army && node.army.owner === player && node.army.forcedMarchBonus) node.army.forcedMarchBonus = false;
-  }
   const incText = Object.entries(inc).filter(([, v]) => v > 0).map(([k, v]) => `${RES_LABEL[k]}+${v}`).join(' ') || '없음';
-  pushLog(state, `--- ${player} 턴 시작 (${incText}) ---`);
+  pushLog(state, `--- ${player} 턴 시작 (AP ${pl.ap}, ${incText}) ---`);
   state = drawCards(state, player, DRAW_PER_TURN);
   return state;
 }
 
-const RES_LABEL = { supply: '물자', influence: '영향력', research: '연구', zeal: '광신', rift: '균열력', spore: '포자' };
+const RES_LABEL = { supply: '물자', research: '연구', zeal: '광신', rift: '균열력', spore: '포자', authority: '권위', corruption: '타락' };
 
 function canAfford(pl, cost) {
   return Object.entries(cost).every(([k, v]) => (pl[k] || 0) >= v);
@@ -121,7 +171,11 @@ function payCost(pl, cost) {
 }
 
 function powerMultiplier(state, player) {
-  return state.players[player].specialization === 'military' ? 1.1 : 1.0;
+  const pl = state.players[player];
+  let mult = pl.specialization === 'military' ? 1.1 : 1.0;
+  // 차원 괴물 특성 — 차원문 서지: 차원문 티어가 오를수록 소환수뿐 아니라 부대 전투력 자체가 강해진다 (후반 캐리형).
+  if (pl.race === 'rift') mult *= 1 + 0.08 * (pl.gateLevel || 1);
+  return mult;
 }
 
 function checkConquest(state) {
@@ -135,9 +189,11 @@ function resolveCombat(state, attackerPlayer, attackerRawPower, defenderPlayer, 
   const stanceMult = opts.defenderStance === 'defend' ? 1.3 : opts.defenderStance === 'retreat' ? 0.5 : 1.0;
   const heroMult = opts.heroVsCamp ? 1.5 : 1.0;
   const forcedMult = opts.forcedMarch ? 1.5 : 1.0;
+  const attackerSporeMult = opts.attackerSporeZone ? 1.15 : 1.0;
+  const defenderSporeMult = opts.defenderSporeZone ? 1.15 : 1.0;
 
-  const attackerEff = attackerRawPower * forcedMult * heroMult * powerMultiplier(state, attackerPlayer) * seededVariance(state.seed, c1, 0.1);
-  const defenderEff = defenderRawPower * stanceMult * opts.terrainMult * (defenderPlayer ? powerMultiplier(state, defenderPlayer) : 1.0) * seededVariance(state.seed, c2, 0.1);
+  const attackerEff = attackerRawPower * forcedMult * heroMult * attackerSporeMult * powerMultiplier(state, attackerPlayer) * seededVariance(state.seed, c1, 0.1);
+  const defenderEff = defenderRawPower * stanceMult * opts.terrainMult * defenderSporeMult * (defenderPlayer ? powerMultiplier(state, defenderPlayer) : 1.0) * seededVariance(state.seed, c2, 0.1);
 
   const dmgToDefender = attackerEff * 0.7;
   const dmgToAttacker = defenderEff * 0.7;
@@ -153,6 +209,8 @@ function resolveCombat(state, attackerPlayer, attackerRawPower, defenderPlayer, 
     bothDestroyed: atkRemain <= 0 && defRemain <= 0,
     bothSurvive: atkRemain > 0 && defRemain > 0,
     attackerSurvivorRaw, defenderSurvivorRaw,
+    lossAttacker: Math.max(0, attackerRawPower - attackerSurvivorRaw),
+    lossDefender: Math.max(0, defenderRawPower - defenderSurvivorRaw),
   };
 }
 
@@ -164,35 +222,71 @@ function updateDumpDomination(state) {
     else state.dumpDomination = { owner: owners[0], consecutiveRounds: 1 };
     if (state.dumpDomination.consecutiveRounds >= DOMINATION_ROUNDS_NEEDED) {
       state.phase = 'ended'; state.winner = owners[0]; state.winReason = 'dump-domination';
-      pushLog(state, `${owners[0]}가 매립지 3개를 ${DOMINATION_ROUNDS_NEEDED}라운드 연속 지배했다. 지배 승리!`);
+      pushLog(state, `${owners[0]}가 매립지 ${DUMP_NODE_IDS.length}개를 ${DOMINATION_ROUNDS_NEEDED}라운드 연속 지배했다. 지배 승리!`);
     }
   } else {
     state.dumpDomination = { owner: null, consecutiveRounds: 0 };
   }
 }
 
-// 감염체 §6.4: 감염 진행 노드는 라운드가 끝날 때마다 카운트다운되어 0이 되면 소유권이 넘어간다.
+// 감염체 §6.4: 감염 진행 노드는 라운드가 끝날 때마다 카운트다운된다.
+// M3: 방어군이 주둔해 있으면 진행이 "정지"된다(리셋은 아님) — 수도 감염도 가능해졌기 때문에
+// 방어자에게 "탈환하면 막을 수 있다"는 대응 수단을 준다.
 function tickInfestation(state) {
   for (const [id, node] of Object.entries(state.nodes)) {
     if (!node.infested) continue;
+    const defenderPresent = node.army && node.army.owner !== node.infested.owner && node.army.power > 0;
+    if (defenderPresent) {
+      pushLog(state, `${id}: 방어군 주둔으로 감염 진행 정지`);
+      continue;
+    }
     node.infested.roundsLeft -= 1;
     if (node.infested.roundsLeft <= 0) {
       const owner = node.infested.owner;
+      const wasCapital = node.type === 'capital';
       node.owner = owner;
       node.infested = null;
-      pushLog(state, `${id} 노드가 감염 완료되어 ${owner} 소유가 되었다`);
+      pushLog(state, `${id} 노드가 감염 완료되어 ${owner} 소유가 되었다${wasCapital ? ' — 수도 함락!' : ''}`);
+      maybeAutoSpread(state, owner, id);
     }
   }
   if (state.phase !== 'ended') checkConquest(state);
 }
 
+// 감염체 특성 — 자연 확산: 감염 완료 지점에서 40% 확률로 인접 노드에 무료로 감염이 새로 시작된다.
+// (저그 크립처럼, 포자 지대가 스스로 번져나가는 느낌을 준다)
+function maybeAutoSpread(state, player, fromId) {
+  const pl = state.players[player];
+  if (pl.race !== 'infested') return;
+  const roll = seededRandom(state.seed, state.rngCounter++);
+  if (roll > AUTO_SPREAD_CHANCE) return;
+  const candidates = (ADJACENCY[fromId] || []).filter((nb) => {
+    const n = state.nodes[nb];
+    if (n.type === 'capital') return false;
+    if (n.owner === player) return false;
+    if (n.infested) return false;
+    return true;
+  });
+  if (!candidates.length) return;
+  const idx = Math.floor(seededRandom(state.seed, state.rngCounter++) * candidates.length);
+  const pick = candidates[idx];
+  const rounds = Math.max(1, 2 - Math.floor(((pl.virulence || 1) - 1) / 2));
+  state.nodes[pick].infested = { owner: player, roundsLeft: rounds };
+  state.nodes[pick].sporeZone = true;
+  pushLog(state, `${player}: 포자 지대의 여파로 ${pick}에 자연 감염 발생 (감염력 특성)`);
+}
+
 function applyInfestedResidual(state, infestedPlayer, nodeId) {
   const node = state.nodes[nodeId];
-  if (!node || node.type === 'capital') return;
+  if (!node) return;
   if (node.owner === infestedPlayer && !node.infested) return;
-  node.infested = { owner: infestedPlayer, roundsLeft: 2 };
+  const virulence = state.players[infestedPlayer].virulence || 1;
+  const base = node.type === 'capital' ? 4 : 2;
+  const rounds = Math.max(1, base - Math.floor((virulence - 1) / 2));
+  node.infested = { owner: infestedPlayer, roundsLeft: rounds };
+  node.sporeZone = true;
   state.players[infestedPlayer].spore += 2;
-  pushLog(state, `${infestedPlayer}: 전투의 여파로 ${nodeId}에 포자가 남았다 (감염 시작)`);
+  pushLog(state, `${infestedPlayer}: 전투의 여파로 ${nodeId}에 포자가 남았다 (감염 시작, 포자 지대화)`);
 }
 
 function computeScore(state, player) {
@@ -201,15 +295,34 @@ function computeScore(state, player) {
     if (node.owner === player) { nodesOwned++; if (DUMP_NODE_IDS.includes(id)) dumps++; }
   }
   const pl = state.players[player];
-  return nodesOwned * 10 + dumps * 15 + pl.influence * 2 + pl.supply * 1;
+  const uniqueTotal = (pl.research || 0) + (pl.zeal || 0) + (pl.rift || 0) + (pl.spore || 0) + (pl.authority || 0) + (pl.corruption || 0);
+  return nodesOwned * 10 + dumps * 15 + uniqueTotal * 1 + pl.supply * 1 + ((pl.capitalTier || 1) - 1) * 20;
 }
 
 function finalizeScoreVictory(state) {
   const s1 = computeScore(state, 'P1');
   const s2 = computeScore(state, 'P2');
   state.phase = 'ended'; state.winReason = 'score';
-  if (s1 === s2) { state.winner = 'draw'; pushLog(state, `12라운드 종료. 점수 동률(${s1} : ${s2}) — 무승부`); }
-  else { state.winner = s1 > s2 ? 'P1' : 'P2'; pushLog(state, `12라운드 종료. 점수 P1 ${s1} : P2 ${s2} — ${state.winner} 승리`); }
+  if (s1 === s2) { state.winner = 'draw'; pushLog(state, `${ROUND_CAP}라운드 종료. 점수 동률(${s1} : ${s2}) — 무승부`); }
+  else { state.winner = s1 > s2 ? 'P1' : 'P2'; pushLog(state, `${ROUND_CAP}라운드 종료. 점수 P1 ${s1} : P2 ${s2} — ${state.winner} 승리`); }
+}
+
+// 수도 티어가 오르면 잠겨 있던 상위 카드를 덱 안 무작위 위치에 끼워 넣는다 (즉시 재드로우 대상이 됨).
+function unlockCardsForTier(state, player, tier) {
+  const pl = state.players[player];
+  const stay = [];
+  const unlocked = [];
+  for (const card of pl.locked) {
+    const def = CARD_DEFS[card.kind];
+    if (!def || !def.minCapitalTier || def.minCapitalTier <= tier) unlocked.push(card);
+    else stay.push(card);
+  }
+  pl.locked = stay;
+  for (const card of unlocked) {
+    const idx = Math.floor(seededRandom(state.seed, state.rngCounter++) * (pl.deck.length + 1));
+    pl.deck.splice(idx, 0, card);
+  }
+  if (unlocked.length) pushLog(state, `${player}: 수도 티어 ${tier} 달성 — 카드 ${unlocked.length}장 해금`);
 }
 
 function targetValid(state, player, nodeId, filter) {
@@ -218,8 +331,11 @@ function targetValid(state, player, nodeId, filter) {
   if (filter === 'owned') return node.owner === player;
   if (filter === 'ownedNoBuilding') return node.owner === player && !node.building;
   if (filter === 'ownedWithArmy') return node.owner === player && node.army && node.army.owner === player;
+  if (filter === 'enemyArmyAdjacent') {
+    if (!node.army || node.army.owner === player) return false;
+    return (ADJACENCY[nodeId] || []).some((nb) => state.nodes[nb].owner === player);
+  }
   if (filter === 'infectable') {
-    if (node.type === 'capital') return false;
     if (node.owner === player) return false;
     if (node.infested && node.infested.owner === player) return false;
     return (ADJACENCY[nodeId] || []).some((nb) => state.nodes[nb].owner === player);
@@ -241,17 +357,20 @@ export function reduce(state, action) {
       const card = pl.hand[idx];
       const def = CARD_DEFS[card.kind];
       if (!def) return state;
+      const cost = resolveCost(def, pl);
       if (pl.ap < def.apCost) { pushLog(state, `AP 부족으로 ${def.name} 사용 실패`); return state; }
-      if (!canAfford(pl, def.cost)) { pushLog(state, `자원 부족으로 ${def.name} 사용 실패`); return state; }
+      if (!canAfford(pl, cost)) { pushLog(state, `자원 부족으로 ${def.name} 사용 실패`); return state; }
       if (def.once && pl.specialization) { pushLog(state, `이미 연구를 특화하여 ${def.name} 사용 불가`); return state; }
       if (def.minGateLevel && (pl.gateLevel || 1) < def.minGateLevel) { pushLog(state, `차원문 레벨 부족으로 ${def.name} 사용 실패`); return state; }
+      if (def.minCapitalTier && (pl.capitalTier || 1) < def.minCapitalTier) { pushLog(state, `수도 티어 부족으로 ${def.name} 사용 실패`); return state; }
+      if (def.effect === 'capitalTierUp' && (pl.capitalTier || 1) >= CAPITAL_TIER_MAX) { pushLog(state, `수도 티어가 이미 최대치(${CAPITAL_TIER_MAX})`); return state; }
       const targetNode = targetNodeId ? state.nodes[targetNodeId] : null;
       if (def.needsTarget && !targetValid(state, player, targetNodeId, def.targetFilter)) {
         pushLog(state, `${def.name}의 대상이 유효하지 않음`); return state;
       }
 
       pl.ap -= def.apCost;
-      payCost(pl, def.cost);
+      payCost(pl, cost);
       pl.hand.splice(idx, 1);
       pl.discard.push(card);
 
@@ -270,26 +389,53 @@ export function reduce(state, action) {
       } else if (def.effect === 'gateExpand') {
         pl.gateLevel = Math.min(5, (pl.gateLevel || 1) + 1);
         pushLog(state, `${player}: ${def.name} — 차원문 레벨 ${pl.gateLevel}`);
+      } else if (def.effect === 'virulenceUp') {
+        pl.virulence = Math.min(5, (pl.virulence || 1) + 1);
+        pushLog(state, `${player}: ${def.name} — 감염력 ${pl.virulence}`);
+      } else if (def.effect === 'capitalTierUp') {
+        pl.capitalTier = Math.min(CAPITAL_TIER_MAX, (pl.capitalTier || 1) + 1);
+        unlockCardsForTier(state, player, pl.capitalTier);
+        pushLog(state, `${player}: ${def.name} — 수도 티어 ${pl.capitalTier}`);
+      } else if (def.effect === 'weaken') {
+        if (!targetNode.army) { pushLog(state, `${player}: ${def.name} — 대상 부대가 없다`); return state; }
+        targetNode.army.power = Math.max(0, targetNode.army.power - def.weakenAmount);
+        pushLog(state, `${player}: ${def.name} — ${targetNodeId} 부대 전력 -${def.weakenAmount}`);
+        if (targetNode.army.power <= 0) { targetNode.army = null; pushLog(state, `${targetNodeId} 부대가 소멸했다`); }
       } else if (def.effect === 'infect') {
-        targetNode.infested = { owner: player, roundsLeft: def.infectRounds || 2 };
-        pushLog(state, `${player}: ${def.name} — ${targetNodeId} 감염 시작 (${def.infectRounds}라운드 후 완료)`);
+        const isCapital = targetNode.type === 'capital';
+        let rounds = isCapital ? (def.infectRoundsCapital || 4) : (def.infectRounds || 2);
+        rounds = Math.max(1, rounds - Math.floor(((pl.virulence || 1) - 1) / 2));
+        if (!isCapital) {
+          const nearSpore = (ADJACENCY[targetNodeId] || []).some((nb) => state.nodes[nb].sporeZone && state.nodes[nb].owner === player);
+          if (nearSpore) rounds = Math.max(1, rounds - 1);
+        }
+        targetNode.infested = { owner: player, roundsLeft: rounds };
+        targetNode.sporeZone = true;
+        pushLog(state, `${player}: ${def.name} — ${targetNodeId} 감염 시작 (${rounds}라운드 후 완료${isCapital ? ', 수도 함락 위협!' : ''})`);
       } else if (def.effect === 'plagueAccelerate') {
         let count = 0;
         for (const node of Object.values(state.nodes)) {
           if (node.infested && node.infested.owner === player) { node.infested.roundsLeft = Math.max(0, node.infested.roundsLeft - 1); count++; }
         }
         pushLog(state, `${player}: ${def.name} — 진행 중인 감염 ${count}건 가속`);
+      } else if (def.effect === 'drawCard') {
+        state = drawCards(state, player, def.drawAmount || 1);
+        pushLog(state, `${player}: ${def.name} — 카드 ${def.drawAmount || 1}장 드로우`);
       } else if (def.spawnPower) {
-        if (!targetNode.army) targetNode.army = { owner: player, power: 0, stance: 'defend', hero: false };
+        if (!targetNode.army) targetNode.army = { owner: player, power: 0, stance: 'defend', hero: false, moveRange: 1, movePoints: 1 };
         let power = def.spawnPower;
         if (def.scalesWithGate) power += (pl.gateLevel || 1) * (def.gatePowerMult || 0);
         targetNode.army.power += power;
         if (def.hero) targetNode.army.hero = true;
-        pushLog(state, `${player}: ${def.name} 사용 (대상 ${targetNodeId}, 전력 +${power})`);
+        const range = def.moveRange || 1;
+        targetNode.army.moveRange = Math.max(targetNode.army.moveRange || 1, range);
+        targetNode.army.movePoints = Math.max(targetNode.army.movePoints || 0, range);
+        if (def.grantsSporeIncome) {
+          targetNode.bonusIncome = { ...(targetNode.bonusIncome || {}), spore: (targetNode.bonusIncome?.spore || 0) + def.grantsSporeIncome };
+        }
+        pushLog(state, `${player}: ${def.name} 사용 (대상 ${targetNodeId}, 전력 +${power}, 이동력 ${range})`);
       } else if (card.kind === 'resupply') {
-        pl.supply += 3; pushLog(state, `${player}: ${def.name} 사용`);
-      } else if (card.kind === 'intel') {
-        pl.influence += 3; pushLog(state, `${player}: ${def.name} 사용`);
+        pl.supply += 2; pushLog(state, `${player}: ${def.name} 사용`);
       } else if (card.kind === 'forcedMarch') {
         targetNode.army.forcedMarchBonus = true; pushLog(state, `${player}: ${def.name} 사용 (대상 ${targetNodeId})`);
       } else if (card.kind === 'pathFaith') {
@@ -299,7 +445,7 @@ export function reduce(state, action) {
       } else if (card.kind === 'pathHero') {
         pl.specialization = 'hero';
         const cap = state.nodes[player === 'P1' ? 'C1' : 'C2'];
-        if (!cap.army) cap.army = { owner: player, power: 0, stance: 'defend', hero: false };
+        if (!cap.army) cap.army = { owner: player, power: 0, stance: 'defend', hero: false, moveRange: 1, movePoints: 1 };
         cap.army.power += def.grantHeroAtCapital || 6; cap.army.hero = true;
         pushLog(state, `${player}: 연구 특화 — 용사`);
       }
@@ -309,11 +455,9 @@ export function reduce(state, action) {
     case 'SET_STANCE': {
       const { player, nodeId, stance } = action;
       if (state.activePlayer !== player) return state;
-      if (state.ordersUsedThisTurn.includes(nodeId)) return state;
       const node = state.nodes[nodeId];
       if (!node.army || node.army.owner !== player) return state;
       node.army.stance = stance;
-      state.ordersUsedThisTurn.push(nodeId);
       pushLog(state, `${player}: ${nodeId} 부대 태세를 ${stance === 'defend' ? '방어' : '후퇴'}로 설정`);
       return state;
     }
@@ -321,15 +465,20 @@ export function reduce(state, action) {
     case 'ISSUE_MARCH': {
       const { player, fromNodeId, toNodeId } = action;
       if (state.activePlayer !== player) return state;
-      if (state.ordersUsedThisTurn.includes(fromNodeId)) return state;
       if (!ADJACENCY[fromNodeId] || !ADJACENCY[fromNodeId].includes(toNodeId)) return state;
       const fromNode = state.nodes[fromNodeId];
       const toNode = state.nodes[toNodeId];
       if (!fromNode.army || fromNode.army.owner !== player) return state;
+      if ((fromNode.army.movePoints || 0) <= 0) {
+        pushLog(state, `${player}: ${fromNodeId} 부대는 이번 턴 이동력을 모두 사용했다`);
+        return state;
+      }
 
-      state.ordersUsedThisTurn.push(fromNodeId);
       const movingArmy = fromNode.army;
+      const remainingMP = movingArmy.movePoints - 1;
       const forcedMarch = !!movingArmy.forcedMarchBonus;
+      const attackerRace = state.players[player].race;
+      const attackerSporeZone = attackerRace === 'infested' && !!fromNode.sporeZone;
 
       const isEnemyArmy = toNode.army && toNode.army.owner !== player;
       const isGarrisonedCamp = toNode.type === 'neutralCamp' && toNode.owner === null && toNode.garrison > 0;
@@ -338,25 +487,36 @@ export function reduce(state, action) {
         if (toNode.owner === player && toNode.army) {
           toNode.army.power += movingArmy.power;
           toNode.army.hero = toNode.army.hero || movingArmy.hero;
+          toNode.army.moveRange = Math.max(toNode.army.moveRange || 1, movingArmy.moveRange || 1);
+          toNode.army.movePoints = Math.max(toNode.army.movePoints || 0, remainingMP);
         } else {
           toNode.owner = player;
-          toNode.army = { owner: player, power: movingArmy.power, stance: 'defend', hero: movingArmy.hero };
+          toNode.army = { owner: player, power: movingArmy.power, stance: 'defend', hero: movingArmy.hero, moveRange: movingArmy.moveRange || 1, movePoints: remainingMP };
           if (toNode.infested && toNode.infested.owner === player) toNode.infested = null;
         }
         fromNode.army = null;
-        pushLog(state, `${player}: ${fromNodeId} → ${toNodeId} 진군 (무혈 점령/합류)`);
+        pushLog(state, `${player}: ${fromNodeId} → ${toNodeId} 진군 (무혈 점령/합류, 남은 이동력 ${remainingMP})`);
       } else {
         const defenderPlayer = toNode.army ? toNode.army.owner : null;
+        const defenderRace = defenderPlayer ? state.players[defenderPlayer].race : null;
         const defenderRawPower = toNode.army ? toNode.army.power : toNode.garrison;
         const terrainMult = toNode.type === 'capital' ? 1.5 : toNode.building === 'fortress' ? 1.25 : 1.0;
         const heroVsCamp = movingArmy.hero && isGarrisonedCamp;
+        const defenderSporeZone = defenderRace === 'infested' && !!toNode.sporeZone;
         const result = resolveCombat(state, player, movingArmy.power, defenderPlayer, defenderRawPower, {
           defenderStance: toNode.army ? toNode.army.stance : 'defend',
-          terrainMult, heroVsCamp, forcedMarch,
+          terrainMult, heroVsCamp, forcedMarch, attackerSporeZone, defenderSporeZone,
         });
 
-        const attackerRace = state.players[player].race;
-        const defenderRace = defenderPlayer ? state.players[defenderPlayer].race : null;
+        // 광신도 특성 — 출혈 경제: 전투가 벌어지면(승패 무관) 양측이 잃은 전력에 비례해 광신을 자동 획득한다.
+        if (attackerRace === 'cultists') {
+          const gain = Math.floor((result.lossAttacker + result.lossDefender) * 0.15);
+          if (gain > 0) { state.players[player].zeal += gain; pushLog(state, `${player}: 출혈 경제 — 광신 +${gain}`); }
+        }
+        if (defenderRace === 'cultists' && defenderPlayer) {
+          const gain = Math.floor((result.lossAttacker + result.lossDefender) * 0.15);
+          if (gain > 0) { state.players[defenderPlayer].zeal += gain; pushLog(state, `${defenderPlayer}: 출혈 경제 — 광신 +${gain}`); }
+        }
 
         if (result.bothDestroyed) {
           fromNode.army = null;
@@ -369,14 +529,13 @@ export function reduce(state, action) {
           fromNode.army = null;
           const wasCamp = isGarrisonedCamp;
           toNode.owner = player;
-          toNode.army = { owner: player, power: result.attackerSurvivorRaw, stance: 'defend', hero: movingArmy.hero };
+          toNode.army = { owner: player, power: result.attackerSurvivorRaw, stance: 'defend', hero: movingArmy.hero, moveRange: movingArmy.moveRange || 1, movePoints: 0 };
           if (wasCamp) {
             toNode.garrison = 0;
             const rewardPl = state.players[player];
             rewardPl.supply += NEUTRAL_CAMP_REWARD.supply;
-            rewardPl.influence += NEUTRAL_CAMP_REWARD.influence;
             state = drawCards(state, player, NEUTRAL_CAMP_REWARD.drawCards);
-            pushLog(state, `${player}: ${fromNodeId} → ${toNodeId} 캠프 격파! 보상 획득 (물자+${NEUTRAL_CAMP_REWARD.supply} 영향력+${NEUTRAL_CAMP_REWARD.influence} 카드+${NEUTRAL_CAMP_REWARD.drawCards})`);
+            pushLog(state, `${player}: ${fromNodeId} → ${toNodeId} 캠프 격파! 보상 획득 (물자+${NEUTRAL_CAMP_REWARD.supply} 카드+${NEUTRAL_CAMP_REWARD.drawCards})`);
           } else {
             pushLog(state, `${player}: ${fromNodeId} → ${toNodeId} 전투 승리, 노드 점령`);
           }
@@ -390,7 +549,7 @@ export function reduce(state, action) {
         } else {
           if (toNode.army) toNode.army.power = result.defenderSurvivorRaw;
           else toNode.garrison = result.defenderSurvivorRaw;
-          fromNode.army = { owner: player, power: result.attackerSurvivorRaw, stance: 'defend', hero: movingArmy.hero };
+          fromNode.army = { owner: player, power: result.attackerSurvivorRaw, stance: 'defend', hero: movingArmy.hero, moveRange: movingArmy.moveRange || 1, movePoints: 0 };
           pushLog(state, `${player}: ${fromNodeId} → ${toNodeId} 전투, 양측 생존 — 방어측 유지`);
         }
       }

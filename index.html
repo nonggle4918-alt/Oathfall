@@ -9,8 +9,8 @@
 <body>
   <div id="app">
     <header id="app-header">
-      <h1>OATHFALL <span class="subtitle">다크 판타지 디플로메시 — 로컬 프로토 (4종족, 핫싯+AI)</span></h1>
-      <div id="round-info">라운드 1 / 12</div>
+      <h1>OATHFALL <span class="subtitle">다크 판타지 디플로메시 — 로컬 프로토 M3 (4종족, 이동력+수도 티어, 핫싯+AI)</span></h1>
+      <div id="round-info">라운드 1 / 20</div>
       <button id="new-game-btn" class="btn btn-ghost">새 게임</button>
     </header>
 
@@ -25,17 +25,20 @@
           <h2>병력 명령</h2>
           <div id="order-panel"></div>
         </section>
-        <section id="hand-section">
-          <h2>손패</h2>
-          <div id="hand"></div>
-        </section>
-        <button id="end-turn-btn" class="btn btn-primary hidden">턴 종료</button>
         <section id="log-section">
           <h2>진행 기록</h2>
           <div id="log"></div>
         </section>
       </aside>
     </main>
+
+    <footer id="hand-tray" class="hidden">
+      <div id="hand-tray-header">
+        <h2>손패</h2>
+        <button id="end-turn-btn" class="btn btn-primary">턴 종료</button>
+      </div>
+      <div id="hand"></div>
+    </footer>
 
     <div id="setup-overlay" class="overlay"></div>
     <div id="victory-overlay" class="overlay hidden"></div>

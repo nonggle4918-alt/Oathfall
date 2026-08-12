@@ -50,13 +50,13 @@ body {
 .res-title { font-weight: bold; margin-bottom: 0.2rem; }
 .res-line { font-size: 0.85rem; color: var(--muted); }
 
-#main-layout { display: flex; flex: 1; gap: 1rem; padding: 1rem 1.25rem; }
+#main-layout { display: flex; flex: 1; gap: 1rem; padding: 1rem 1.25rem 0.5rem; min-height: 0; }
 #map-panel { flex: 2; min-width: 0; background: var(--panel); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.5rem; }
 #map { width: 100%; height: auto; display: block; }
 .node-clickable { cursor: pointer; }
 .node-clickable:hover { filter: brightness(1.4); }
 
-#side-panel { flex: 1; min-width: 300px; max-width: 420px; display: flex; flex-direction: column; gap: 0.75rem; }
+#side-panel { flex: 1; min-width: 280px; max-width: 380px; display: flex; flex-direction: column; gap: 0.75rem; }
 #side-panel section {
   background: var(--panel); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.75rem;
 }
@@ -66,11 +66,24 @@ body {
 #order-panel .btn { display: block; width: 100%; margin-bottom: 0.4rem; }
 .hint { font-size: 0.8rem; color: var(--muted); }
 
-#hand { display: flex; flex-direction: column; gap: 0.5rem; max-height: 320px; overflow-y: auto; }
+#log-section { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#log { overflow-y: auto; max-height: 220px; font-size: 0.78rem; color: var(--muted); display: flex; flex-direction: column-reverse; }
+.log-line { padding: 0.15rem 0; border-bottom: 1px solid #1c2740; }
+
+/* 손패 트레이 — 화면 하단 전체 폭 (카드 배치 전용 구역) */
+#hand-tray {
+  border-top: 2px dashed var(--accent);
+  background: #0c1424;
+  padding: 0.75rem 1.25rem 1rem;
+}
+#hand-tray-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem; }
+#hand-tray-header h2 { font-size: 0.85rem; margin: 0; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+#hand-tray-header .btn-primary { width: auto; margin: 0; padding: 0.5rem 1.5rem; }
+#hand { display: flex; flex-direction: row; gap: 0.6rem; overflow-x: auto; padding-bottom: 0.25rem; }
 .hand-empty { color: var(--muted); font-size: 0.85rem; }
 .card {
   border: 1px solid var(--border); border-radius: 0.4rem; padding: 0.5rem 0.6rem; cursor: pointer;
-  background: #0e1626;
+  background: #0e1626; flex: 0 0 170px;
 }
 .card:hover { border-color: var(--accent); }
 .card-selected { border-color: var(--accent); background: #1a1f3a; }
@@ -78,10 +91,6 @@ body {
 .card-name { font-weight: bold; font-size: 0.9rem; }
 .card-cost { font-size: 0.75rem; color: #f59e0b; margin: 0.15rem 0; }
 .card-desc { font-size: 0.78rem; color: var(--muted); }
-
-#log-section { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-#log { overflow-y: auto; max-height: 220px; font-size: 0.78rem; color: var(--muted); display: flex; flex-direction: column-reverse; }
-.log-line { padding: 0.15rem 0; border-bottom: 1px solid #1c2740; }
 
 .overlay {
   position: fixed; inset: 0; background: rgba(5,8,16,0.9);
