@@ -1,0 +1,14 @@
+name = "oathfall-mp"
+main = "index.js"
+compatibility_date = "2024-09-23"
+
+[[durable_objects.bindings]]
+name = "GAME_ROOM"
+class_name = "GameRoom"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["GameRoom"]
+
+[vars]
+ALLOWED_ORIGIN = "https://oathfall-7e4.pages.dev"
