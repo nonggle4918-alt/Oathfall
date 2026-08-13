@@ -125,6 +125,28 @@ body {
 
 .res-ability { color: #a3e635; cursor: help; }
 
+.mode-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.8rem; margin: 1rem 0; }
+.mode-btn { padding: 1.2rem 1rem; font-size: 1rem; }
+
+.join-code-input {
+  display: block; width: 100%; margin: 0.5rem 0 1rem; padding: 0.7rem 0.9rem;
+  font-size: 1.1rem; letter-spacing: 0.15em; text-align: center; text-transform: uppercase;
+  background: #0e1626; border: 1px solid var(--border); border-radius: 0.4rem; color: var(--text);
+}
+
+.room-code-display {
+  font-size: 2.2rem; font-weight: bold; letter-spacing: 0.2em; text-align: center;
+  padding: 1rem; margin: 1rem 0; background: #0e1626; border: 1px dashed var(--accent);
+  border-radius: 0.4rem; color: #bef264;
+}
+.share-link-row { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+.share-link-input {
+  flex: 1; padding: 0.6rem 0.8rem; background: #0e1626; border: 1px solid var(--border);
+  border-radius: 0.4rem; color: var(--muted); font-size: 0.85rem;
+}
+
+#online-back-btn, #error-back-btn { display: block; width: 100%; margin-top: 0.5rem; }
+
 @media (max-width: 800px) {
   #main-layout { flex-direction: column; }
   #side-panel { max-width: none; }

@@ -35,16 +35,27 @@
 - 순수 DOM 렌더링(`js/render.js`) + 상태 비저장 진입점(`js/main.js`).
 - 정적 사이트 배포: Cloudflare Pages (`https://oathfall-7e4.pages.dev/`).
 
-## 앞으로 계획 — 온라인 멀티플레이 (진행 중)
+## 앞으로 계획 — 온라인 멀티플레이
 
 상세 설계는 계획 파일(에이전트 검토 완료, 승인됨) 참고. 방향: 비동기(턴제),
 Cloudflare Workers + Durable Objects, 로컬 핫싯+AI 모드 유지, 방 코드/링크 공유 입장.
 
-- [ ] **Phase A** — 서버(`server/`: Worker + `GameRoom` Durable Object, 룸 생성/참가/상태조회/
-  액션제출 엔드포인트, 시청자별 state 마스킹). `wrangler dev` + curl로 검증, UI 없음.
-- [ ] **Phase B** — 클라이언트 연동(`js/netClient.js`, `js/config.js`, `main.js`/`render.js`
-  변경 — 모드 분기, viewerSeat 도입, 폴링). 서로 다른 브라우저 두 개로 end-to-end 검증.
-- [ ] **Phase C** — 마무리(링크 복사, 턴 상태 표시, 에러 UI, 룸 정리 알람, 중복 제출 가드).
+- [x] **Phase A** — 서버(`server/`: Worker + `GameRoom` Durable Object, 룸 생성/참가/상태조회/
+  액션제출 엔드포인트, 시청자별 state 마스킹). `wrangler dev` + curl 스크립트로 검증 완료
+  (룸 생성/참가, 양방향 손패 마스킹, seed 미노출, 턴 교대, 잘못된 턴/토큰/시트사칭 거부,
+  action.player 위조 무시, 없는 방/꽉찬 방, CORS preflight — 전부 통과).
+- [x] **Phase B** — 클라이언트 연동(`js/netClient.js`, `js/config.js`, `main.js`/`render.js`
+  변경 — 모드 분기, viewerSeat 도입, 폴링, 방 만들기/참가/대기 화면). `wrangler dev` +
+  정적 서버 + Playwright로 두 브라우저 컨텍스트를 띄워 end-to-end 검증 완료 (방 생성 →
+  링크로 참가 → 턴 교대 폴링 → 카드 플레이 → ISSUE_MARCH까지 전부 통과, 상대 턴에도 내
+  손패는 계속 보이는 것 확인).
+- [ ] **Phase C** — 마무리(턴 상태 표시는 이미 됨; 남은 것: 방 없음/만료 에러 케이스 실제
+  배포 환경에서 재확인, DO 정리 알람 30일 동작 확인, `.assetsignore`로 `server/` 정적
+  업로드 제외, 실제 두 사람 간 실배포 테스트).
+- [ ] **배포**: `deploy-worker.yml` 첫 실행 후 실제 `*.workers.dev` 주소를 `js/config.js`에
+  반영 필요 (현재는 자리표시자 `oathfall-mp.workers.dev`).
+- [ ] `CLOUDFLARE_API_TOKEN`에 Workers 배포 권한이 있는지 실제 배포로 확인 필요 (Pages
+  편집 권한만 있다면 403 — 사용자가 Cloudflare 대시보드에서 직접 확인/수정해야 함).
 
 ## 이슈 · 알려진 트레이드오프
 

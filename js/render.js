@@ -147,17 +147,23 @@ function specName(s) {
   return { faith: '신앙', military: '군부', hero: '용사' }[s] || s;
 }
 
-export function renderHand(container, state, ui, handlers) {
+// viewerSeat: 이 손패를 "누구 화면에" 그리는지. 기본값(state.activePlayer)은 기존 핫싯
+// 동작과 완전히 동일하다(같은 화면에서 턴이 넘어가면 그 사람 손패가 보임). 온라인 모드에서는
+// main.js가 고정된 내 시트(net.mySeat)를 넘겨서, 상대 턴이어도 내 손패는 계속(비활성 상태로)
+// 보이게 한다 — 상대 턴에 내 손패 자리가 비거나 상대 손패가 새는 걸 막기 위함.
+export function renderHand(container, state, ui, handlers, viewerSeat = state.activePlayer) {
   container.innerHTML = '';
-  const pl = state.players[state.activePlayer];
+  const pl = state.players[viewerSeat];
   if (pl.isAI) {
     container.innerHTML = '<div class="hand-empty">AI 턴 진행 중...</div>';
     return;
   }
+  const canAct = viewerSeat === state.activePlayer && state.phase !== 'ended';
   for (const card of pl.hand) {
     const def = CARD_DEFS[card.kind];
     const cost = resolveCost(def, pl);
-    const affordable = pl.ap >= def.apCost
+    const affordable = canAct
+      && pl.ap >= def.apCost
       && Object.entries(cost).every(([k, v]) => (pl[k] || 0) >= v)
       && !(def.once && pl.specialization)
       && !(def.minGateLevel && (pl.gateLevel || 1) < def.minGateLevel)
@@ -171,7 +177,7 @@ export function renderHand(container, state, ui, handlers) {
       <div class="card-cost">AP${def.apCost}${costParts.length ? ' · ' + costParts.join(' ') : ''}${gateNote}${tierNote}</div>
       <div class="card-desc">${def.desc}</div>
     `;
-    cardEl.addEventListener('click', () => handlers.onCardClick(card.uid));
+    cardEl.addEventListener('click', () => { if (canAct) handlers.onCardClick(card.uid); });
     container.appendChild(cardEl);
   }
 }
@@ -180,29 +186,34 @@ export function renderLog(container, state) {
   container.innerHTML = state.log.slice().reverse().map((l) => `<div class="log-line">[R${l.round} ${l.player}] ${l.text}</div>`).join('');
 }
 
-export function renderOrderPanel(container, state, ui, handlers) {
+export function renderOrderPanel(container, state, ui, handlers, viewerSeat = state.activePlayer) {
   container.innerHTML = '';
   if (!ui.selectedNodeId) {
     container.innerHTML = '<div class="hint">내 부대가 있는 노드를 클릭하면 명령을 내릴 수 있습니다.</div>';
     return;
   }
   const node = state.nodes[ui.selectedNodeId];
-  if (!node.army || node.army.owner !== state.activePlayer || state.players[state.activePlayer].isAI) return;
+  if (!node.army || node.army.owner !== viewerSeat || state.players[viewerSeat].isAI) return;
+  const canAct = viewerSeat === state.activePlayer;
   const title = el('div', { class: 'order-title' });
   title.textContent = `${ui.selectedNodeId} 부대 (전력 ${node.army.power}, 이동력 ${node.army.movePoints}/${node.army.moveRange || 1})`;
   container.appendChild(title);
 
   const btnDefend = el('button', { class: 'btn' });
   btnDefend.textContent = '방어 (전력 +30%)';
-  btnDefend.addEventListener('click', () => handlers.onStance(ui.selectedNodeId, 'defend'));
+  btnDefend.addEventListener('click', () => { if (canAct) handlers.onStance(ui.selectedNodeId, 'defend'); });
   container.appendChild(btnDefend);
 
   const btnRetreat = el('button', { class: 'btn' });
   btnRetreat.textContent = '후퇴 태세 (피해 -50%)';
-  btnRetreat.addEventListener('click', () => handlers.onStance(ui.selectedNodeId, 'retreat'));
+  btnRetreat.addEventListener('click', () => { if (canAct) handlers.onStance(ui.selectedNodeId, 'retreat'); });
   container.appendChild(btnRetreat);
 
-  if ((node.army.movePoints || 0) > 0) {
+  if (!canAct) {
+    const waitHint = el('div', { class: 'hint' });
+    waitHint.textContent = '상대 턴입니다 — 지금은 명령을 내릴 수 없습니다.';
+    container.appendChild(waitHint);
+  } else if ((node.army.movePoints || 0) > 0) {
     const marchHint = el('div', { class: 'hint' });
     marchHint.textContent = `진군하려면 지도에서 인접한 노드를 클릭하세요. (남은 이동력 ${node.army.movePoints})`;
     container.appendChild(marchHint);
@@ -247,6 +258,114 @@ export function renderSetup(container, setup, handlers) {
     elCard.addEventListener('click', () => handlers.onPickRace(elCard.dataset.side, elCard.dataset.race));
   });
   container.querySelector('#start-game-btn').addEventListener('click', () => handlers.onStartGame());
+}
+
+export function renderModeSelect(container, handlers) {
+  container.classList.remove('hidden');
+  container.innerHTML = `
+    <div class="setup-box">
+      <h2>OATHFALL</h2>
+      <p class="hint">플레이 방식을 선택하세요.</p>
+      <div class="mode-grid">
+        <button class="btn mode-btn" data-mode="local">로컬 (핫싯 + AI)</button>
+        <button class="btn mode-btn" data-mode="online">온라인 멀티플레이</button>
+      </div>
+    </div>
+  `;
+  container.querySelectorAll('.mode-btn').forEach((btn) => {
+    btn.addEventListener('click', () => handlers.onPickMode(btn.dataset.mode));
+  });
+}
+
+function raceGridHtml(raceKeys, selectedRace) {
+  const raceCard = (raceKey) => {
+    const info = RACE_INFO[raceKey];
+    const ability = RACE_SPECIAL_ABILITY[raceKey];
+    const selected = selectedRace === raceKey;
+    return `
+      <div class="race-card ${selected ? 'race-selected' : ''}" data-race="${raceKey}">
+        <div class="race-name">${info.name}</div>
+        <div class="race-desc">${info.desc}</div>
+        <div class="race-ability"><strong>특수능력 · ${ability.name}</strong> — ${ability.desc}</div>
+      </div>
+    `;
+  };
+  return raceKeys.map(raceCard).join('');
+}
+
+export function renderOnlineCreate(container, race, handlers) {
+  container.classList.remove('hidden');
+  const raceKeys = Object.keys(RACE_INFO);
+  container.innerHTML = `
+    <div class="setup-box">
+      <h2>온라인 — 방 만들기</h2>
+      <p class="hint">종족을 고르고 방을 만들면 상대에게 보낼 방 코드/링크가 나옵니다.</p>
+      <div class="race-grid">${raceGridHtml(raceKeys, race)}</div>
+      <button id="online-create-btn" class="btn btn-primary" ${race ? '' : 'disabled'}>방 만들기</button>
+      <button id="online-switch-btn" class="btn btn-ghost">방 코드가 있으신가요? 참가하기 →</button>
+      <button id="online-back-btn" class="btn btn-ghost">뒤로</button>
+    </div>
+  `;
+  container.querySelectorAll('.race-card').forEach((elCard) => {
+    elCard.addEventListener('click', () => handlers.onPickRace(elCard.dataset.race));
+  });
+  container.querySelector('#online-create-btn').addEventListener('click', () => handlers.onCreateRoom());
+  container.querySelector('#online-switch-btn').addEventListener('click', () => handlers.onSwitchToJoin());
+  container.querySelector('#online-back-btn').addEventListener('click', () => handlers.onBack());
+}
+
+export function renderOnlineJoin(container, roomCode, race, handlers) {
+  container.classList.remove('hidden');
+  const raceKeys = Object.keys(RACE_INFO);
+  container.innerHTML = `
+    <div class="setup-box">
+      <h2>온라인 — 방 참가</h2>
+      <p class="hint">공유받은 방 코드를 입력하고 종족을 고른 뒤 참가하세요.</p>
+      <input id="join-code-input" class="join-code-input" placeholder="방 코드 (예: AB12CD)" value="${roomCode || ''}" maxlength="6" />
+      <div class="race-grid">${raceGridHtml(raceKeys, race)}</div>
+      <button id="online-join-btn" class="btn btn-primary">참가하기</button>
+      <button id="online-switch-btn" class="btn btn-ghost">← 새 방 만들기</button>
+      <button id="online-back-btn" class="btn btn-ghost">뒤로</button>
+    </div>
+  `;
+  container.querySelectorAll('.race-card').forEach((elCard) => {
+    elCard.addEventListener('click', () => handlers.onPickRace(elCard.dataset.race));
+  });
+  const input = container.querySelector('#join-code-input');
+  input.addEventListener('input', () => handlers.onCodeChange(input.value.toUpperCase()));
+  container.querySelector('#online-join-btn').addEventListener('click', () => handlers.onJoinRoom(input.value.toUpperCase()));
+  container.querySelector('#online-switch-btn').addEventListener('click', () => handlers.onSwitchToCreate());
+  container.querySelector('#online-back-btn').addEventListener('click', () => handlers.onBack());
+}
+
+export function renderOnlineWaiting(container, roomCode, shareUrl, handlers) {
+  container.classList.remove('hidden');
+  container.innerHTML = `
+    <div class="setup-box">
+      <h2>상대를 기다리는 중...</h2>
+      <p class="hint">아래 코드나 링크를 상대에게 보내세요. 상대가 참가하면 자동으로 게임이 시작됩니다.</p>
+      <div class="room-code-display">${roomCode}</div>
+      <div class="share-link-row">
+        <input class="share-link-input" readonly value="${shareUrl}" />
+        <button id="copy-link-btn" class="btn">링크 복사</button>
+      </div>
+      <button id="online-cancel-btn" class="btn btn-ghost">취소</button>
+    </div>
+  `;
+  container.querySelector('#copy-link-btn').addEventListener('click', () => handlers.onCopyLink());
+  container.querySelector('#online-cancel-btn').addEventListener('click', () => handlers.onBack());
+}
+
+export function renderErrorOverlay(container, message, handlers) {
+  container.classList.remove('hidden');
+  container.innerHTML = `
+    <div class="setup-box">
+      <h2>문제가 발생했습니다</h2>
+      <p class="hint">${message}</p>
+      <button id="error-back-btn" class="btn btn-primary">처음으로</button>
+    </div>
+  `;
+  container.querySelector('#error-back-btn').addEventListener('click', () => handlers.onBack());
 }
 
 export function renderVictory(container, state) {
