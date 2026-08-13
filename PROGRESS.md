@@ -52,10 +52,11 @@ Cloudflare Workers + Durable Objects, 로컬 핫싯+AI 모드 유지, 방 코드
 - [ ] **Phase C** — 마무리(턴 상태 표시는 이미 됨; 남은 것: 방 없음/만료 에러 케이스 실제
   배포 환경에서 재확인, DO 정리 알람 30일 동작 확인, `.assetsignore`로 `server/` 정적
   업로드 제외, 실제 두 사람 간 실배포 테스트).
-- [ ] **배포**: `deploy-worker.yml` 첫 실행 후 실제 `*.workers.dev` 주소를 `js/config.js`에
-  반영 필요 (현재는 자리표시자 `oathfall-mp.workers.dev`).
-- [ ] `CLOUDFLARE_API_TOKEN`에 Workers 배포 권한이 있는지 실제 배포로 확인 필요 (Pages
-  편집 권한만 있다면 403 — 사용자가 Cloudflare 대시보드에서 직접 확인/수정해야 함).
+- [x] **배포**: Worker가 `https://oathfall-mp.nonggle4918.workers.dev`로 실제 배포됨.
+  `CLOUDFLARE_API_TOKEN`은 Workers 배포 권한도 이미 있었음(추가 조치 불필요). 최초 배포는
+  Durable Objects 마이그레이션 오류(무료 플랜은 `new_sqlite_classes` 필요, 코드 10097)로
+  한 번 실패했다가 수정 후 성공. `js/config.js`의 `WORKER_BASE_URL`을 실제 주소로 갱신,
+  CORS preflight도 실제 Pages 오리진(`https://oathfall-7e4.pages.dev`)으로 라이브 확인 완료.
 
 ## 이슈 · 알려진 트레이드오프
 
